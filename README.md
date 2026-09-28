@@ -1,6 +1,6 @@
 # Client Management Backend
 
-[![CI](https://github.com/loemratana/depot-client-entry-api/actions/workflows/ci.yml/badge.svg)](https://github.com/loemratana/depot-client-entry-api/actions/workflows/ci.yml)
+[![CI](https://github.com/loemratana/depot-entry-api/actions/workflows/ci.yml/badge.svg)](https://github.com/loemratana/depot-entry-api/actions/workflows/ci.yml)
 
 Express + MongoDB + MinIO API for the Client Data Collection & Management System: a public client submission form with Province → District → Commune cascading locations and document uploads, plus an admin area for search, filtering, document viewing and Excel export.
 
