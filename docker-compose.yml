@@ -1,0 +1,42 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: client-management-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: client_management
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  minio:
+    # MinIO no longer publishes free images to Docker Hub / Quay; Chainguard maintains this build.
+    # It is distroless (no shell/curl/mc), so there is no container healthcheck;
+    # GET /api/health reports MinIO status instead.
+    image: cgr.dev/chainguard/minio:latest
+    container_name: client-management-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9000:9000" # S3 API
+      - "127.0.0.1:9001:9001" # web console
+    volumes:
+      - minio_data:/data
+
+volumes:
+  mongodb_data:
+    name: mongodb_data
+  minio_data:
+    name: minio_data

@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+logs/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+coverage/
+
+# Local Claude Code instructions (contain local dev values)
+.claude/

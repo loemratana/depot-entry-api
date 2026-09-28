@@ -1,0 +1,45 @@
+{
+  "name": "client-management-backend",
+  "version": "1.0.0",
+  "description": "Backend for the Client Data Collection & Management System",
+  "type": "module",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "seed:admin": "node src/scripts/seed-admin.js",
+    "seed:sales": "node src/scripts/seed-sales.js",
+    "seed:sample": "node src/scripts/seed-sample.js",
+    "import:locations": "node src/scripts/import-locations.js",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\""
+  },
+  "nodemonConfig": {
+    "watch": ["src"],
+    "ext": "js,json"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "minio": "^8.0.7",
+    "mongoose": "^9.10.2",
+    "morgan": "^1.12.1",
+    "multer": "^2.4.0",
+    "swagger-ui-express": "^5.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
