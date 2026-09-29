@@ -231,6 +231,13 @@ jobs:
           fi
 
           echo "==> Pull latest code"
+          # First deploy into a folder that was not cloned: make it a clone of this
+          # (public) repo. .env is git-ignored, so it is kept as it is.
+          if [ ! -d .git ]; then
+            echo "Folder is not a git clone yet; connecting it to ${{ github.server_url }}/${{ github.repository }}"
+            git init -q
+            git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
+          fi
           git fetch origin main
           git reset --hard origin/main
 
