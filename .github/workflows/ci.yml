@@ -152,95 +152,118 @@ jobs:
           fi
           echo "All deploy secrets are set."
 
-      # Host key fingerprints are public; the host itself is masked because it is a secret.
-      # Shows which fingerprint to put in VPS_HOST_KEY when the deploy reports a mismatch.
-      - name: Check VPS host key fingerprint
+      # Pins the VPS host key with plain OpenSSH: only the scanned key whose fingerprint
+      # equals VPS_HOST_KEY is trusted, and only that key type is accepted. Works whether
+      # VPS_HOST_KEY is the ECDSA, ED25519 or RSA fingerprint. Host key fingerprints are public.
+      - name: Set up SSH with the pinned host key
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_PASSPHRASE: ${{ secrets.VPS_SSH_PASSPHRASE }}
           VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
         run: |
-          scan=$(ssh-keyscan -T 15 -p 2244 "$VPS_HOST" 2>/dev/null | ssh-keygen -lf - 2>/dev/null || true)
-          if [ -z "$scan" ]; then
-            echo "::warning::Could not read the VPS host keys on port 2244 (host unreachable or port closed)."
-            exit 0
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+
+          ssh-keyscan -T 15 -p 2244 "$VPS_HOST" 2>/dev/null > "$RUNNER_TEMP/scanned_keys" || true
+          if [ ! -s "$RUNNER_TEMP/scanned_keys" ]; then
+            echo "::error::Could not read the VPS host keys on port 2244 (host unreachable or port closed)."
+            exit 1
           fi
           echo "Host key fingerprints the VPS presents:"
-          echo "$scan" | awk '{ print "  " $NF " " $2 }'
+          ssh-keygen -lf "$RUNNER_TEMP/scanned_keys" | awk '{ print "  " $NF " " $2 }'
 
-          # The deploy step (drone-ssh, Go's SSH library) checks the host key it negotiates,
-          # preferring ECDSA, then RSA, then ED25519, so VPS_HOST_KEY must be that one
-          required=""
-          for type in ECDSA RSA ED25519; do
-            required=$(echo "$scan" | awk -v t="($type)" '$NF == t { print $2; exit }')
-            if [ -n "$required" ]; then required_type=$type; break; fi
-          done
-          echo "The deploy step verifies the ($required_type) key: $required"
-
-          # Compare without printing the secret; tolerate stray spaces/newlines in it
-          expected=$(printf '%s' "$VPS_HOST_KEY" | tr -d '[:space:]')
-          if [ "$expected" = "$required" ]; then
-            echo "VPS_HOST_KEY is correct."
-          else
-            other=$(echo "$scan" | awk -v fp="$expected" '$2 == fp { print $NF }')
-            if [ -n "$other" ]; then
-              echo "::error::VPS_HOST_KEY is the $other fingerprint, but the deploy verifies the ($required_type) key. Set VPS_HOST_KEY to: $required"
-            else
-              echo "::error::VPS_HOST_KEY matches none of the VPS host keys. Set VPS_HOST_KEY to: $required"
+          # Keep only the key matching VPS_HOST_KEY (stray spaces/newlines in the secret are ignored)
+          pin=$(printf '%s' "$VPS_HOST_KEY" | tr -d '[:space:]')
+          : > ~/.ssh/known_hosts
+          key_type=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            fp=$(printf '%s\n' "$line" | ssh-keygen -lf - | awk '{ print $2 }')
+            if [ "$fp" = "$pin" ]; then
+              printf '%s\n' "$line" >> ~/.ssh/known_hosts
+              key_type=$(printf '%s\n' "$line" | awk '{ print $2 }')
             fi
+          done < "$RUNNER_TEMP/scanned_keys"
+          if [ -z "$key_type" ]; then
+            echo "::error::VPS_HOST_KEY matches none of the host keys above. Set it to one SHA256:... value from the list."
+            exit 1
+          fi
+          # RSA host keys are verified with SHA-2 signatures
+          if [ "$key_type" = "ssh-rsa" ]; then key_type="rsa-sha2-512,rsa-sha2-256"; fi
+          echo "Trusting only the pinned host key ($key_type)."
+
+          # Deploy key without its passphrase, only on this temporary runner (removed at the end)
+          printf '%s\n' "$VPS_SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if ! ssh-keygen -p -P "$VPS_SSH_PASSPHRASE" -N "" -f ~/.ssh/deploy_key > /dev/null 2>&1; then
+            echo "::error::Could not unlock VPS_SSH_KEY with VPS_SSH_PASSPHRASE (wrong passphrase, or the key was pasted incompletely)."
             exit 1
           fi
 
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VPS_HOST
+            Port 2244
+            User $VPS_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            HostKeyAlgorithms $key_type
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            ServerAliveInterval 30
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
+
       - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          # The private key is passphrase protected
-          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
-          fingerprint: ${{ secrets.VPS_HOST_KEY }}
-          port: 2244
+        run: |
+          ssh vps 'bash -s' <<'DEPLOY'
+          set -e
 
-          script: |
-            set -e
+          echo "==> Go to application directory"
+          cd /opt/apps/client-management
 
-            echo "==> Go to application directory"
-            cd /opt/apps/client-management
+          if [ ! -f .env ]; then
+            echo "Missing /opt/apps/client-management/.env"
+            exit 1
+          fi
 
-            if [ ! -f .env ]; then
-              echo "Missing /opt/apps/client-management/.env"
+          echo "==> Pull latest code"
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "==> Build and start API"
+          docker compose -f docker-compose.prod.yml up -d --build api
+
+          echo "==> Wait for the API to report healthy"
+          for i in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' depot-entry-api 2>/dev/null || echo missing)
+
+            if [ "$status" = "healthy" ]; then
+              echo "API is healthy"
+              break
+            fi
+
+            if [ "$i" = "30" ]; then
+              echo "API did not become healthy (last status: $status)"
+              docker compose -f docker-compose.prod.yml logs --tail=100 api
               exit 1
             fi
 
-            echo "==> Pull latest code"
-            git fetch origin main
-            git reset --hard origin/main
+            sleep 5
+          done
 
-            echo "==> Build and start API"
-            docker compose -f docker-compose.prod.yml up -d --build api
+          echo "==> Remove unused images"
+          docker image prune -f
 
-            echo "==> Wait for the API to report healthy"
-            for i in $(seq 1 30); do
-              status=$(docker inspect --format '{{.State.Health.Status}}' depot-entry-api 2>/dev/null || echo missing)
+          echo "==> Deployment status"
+          docker compose -f docker-compose.prod.yml ps
 
-              if [ "$status" = "healthy" ]; then
-                echo "API is healthy"
-                break
-              fi
+          echo "==> Deployment completed successfully"
+          DEPLOY
 
-              if [ "$i" = "30" ]; then
-                echo "API did not become healthy (last status: $status)"
-                docker compose -f docker-compose.prod.yml logs --tail=100 api
-                exit 1
-              fi
-
-              sleep 5
-            done
-
-            echo "==> Remove unused images"
-            docker image prune -f
-
-            echo "==> Deployment status"
-            docker compose -f docker-compose.prod.yml ps
-
-            echo "==> Deployment completed successfully"
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/config
