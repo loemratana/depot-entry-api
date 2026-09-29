@@ -6,6 +6,7 @@ import multer from "multer";
 import config from "../config/env.js";
 import ApiError from "../utils/ApiError.js";
 import { PHOTO_ID_PATTERN } from "../modules/submission/submission.validation.js";
+import { detectBufferType } from "../modules/upload/file.validation.js";
 
 export const UPLOAD_TMP_DIR = path.join(os.tmpdir(), "client-management-uploads");
 fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
@@ -150,6 +151,40 @@ export const uploadSubmissionWithSitePhotos = (req, res, next) => {
             return next(ApiError.validation([{ field: "sitePhotos", message: "Each site photo needs its own photoId" }]));
         }
 
+        next();
+    });
+};
+
+// ---------- Admin brand logo upload ----------
+
+export const LOGO_MAX_BYTES = 2 * 1024 * 1024;
+// No SVG: it can carry scripts
+const LOGO_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/**
+ * Single image in the "logo" field, kept in memory (admin-only, small). The
+ * content is checked against the file signature so only real images are stored.
+ */
+export const uploadBrandLogo = (req, res, next) => {
+    multer({
+        storage: multer.memoryStorage(),
+        limits: { fileSize: LOGO_MAX_BYTES, files: 1, fields: 2 },
+        fileFilter: (req, file, cb) => {
+            const ok = LOGO_MIME_TYPES.has(file.mimetype?.toLowerCase());
+            cb(ok ? null : new ApiError(415, "The logo must be a PNG, JPG or WebP image"), ok);
+        }
+    }).single("logo")(req, res, (err) => {
+        if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+            return next(new ApiError(413, "The logo is larger than 2 MB"));
+        }
+        if (err) return next(err);
+        if (!req.file) return next(ApiError.validation([{ field: "logo", message: "Choose an image to upload" }]));
+
+        const detected = detectBufferType(req.file.buffer);
+        if (!detected || !LOGO_MIME_TYPES.has(detected.mimeType)) {
+            return next(new ApiError(415, "The logo must be a PNG, JPG or WebP image"));
+        }
+        req.logo = { buffer: req.file.buffer, mimeType: detected.mimeType, extension: detected.extension };
         next();
     });
 };

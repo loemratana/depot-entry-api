@@ -9,6 +9,14 @@ const brandSchema = new mongoose.Schema(
         nameKey: { type: String, select: false },
         // Quantities counted for this brand's products, in form order; unset = all of them
         measures: { type: [{ type: String, enum: MEASURE_KEYS }], default: undefined },
+        // Logo image in MinIO (private); served through GET /api/public/stock/brands/:id/logo
+        logo: {
+            type: new mongoose.Schema(
+                { objectKey: String, mimeType: String, size: Number, updatedAt: Date },
+                { _id: false }
+            ),
+            default: undefined
+        },
         sortOrder: { type: Number, default: 0 },
         isActive: { type: Boolean, default: true }
     },

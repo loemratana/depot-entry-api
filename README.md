@@ -37,7 +37,7 @@ All variables are documented in [.env.example](.env.example) and validated at st
 | `CORS_ORIGIN` | Comma-separated allowed origins. `*` is rejected in production |
 | `TRUST_PROXY` | Set to `1` behind one reverse proxy so rate limiting sees real client IPs |
 | `APP_UTC_OFFSET` | Business time zone (default `+07:00`) for submission numbers, date filters and export times |
-| `JWT_SECRET`, `JWT_EXPIRES_IN` | Admin token signing. Secret must be 32+ chars in production |
+| `JWT_SECRET`, `JWT_EXPIRES_IN`, `REFRESH_TOKEN_EXPIRES_DAYS` | Admin token signing and lifetimes (default 14d access, 30 days refresh). Secret must be 32+ chars in production |
 | `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Initial admin for `npm run seed:admin` |
 | `MINIO_*` | MinIO connection and bucket. Access/secret key are also the MinIO root credentials in Docker Compose |
 | `FILE_URL_EXPIRY_SECONDS` | Lifetime of document links shown to admins (default 900) |
@@ -221,7 +221,7 @@ Full interactive documentation with example values is at `/api/docs`. Responses 
 
 ### Authentication
 
-`POST /api/admin/auth/login` with `{ "email", "password" }` returns a JWT (HS256, `JWT_EXPIRES_IN`). Send it as `Authorization: Bearer <token>`. Passwords are hashed with bcrypt (12 rounds) and never returned. Logout revokes that specific token: its ID is stored in `revokedtokens` until the token would have expired anyway. Every request re-checks that the admin still exists and is active.
+`POST /api/admin/auth/login` with `{ "email", "password" }` returns a JWT access token (HS256, `JWT_EXPIRES_IN`, default 14 days) and a refresh token (`REFRESH_TOKEN_EXPIRES_DAYS`, default 30 days). Send the access token as `Authorization: Bearer <token>`. `POST /api/admin/auth/refresh` with `{ "refreshToken" }` returns a new access token and a new refresh token; the old refresh token stops working, and reusing a used one ends that whole session. Refresh tokens are stored only as SHA-256 hashes. Passwords are hashed with bcrypt (12 rounds) and never returned. Logout revokes that access token (its ID is stored in `revokedtokens` until it would have expired anyway) and, when `{ "refreshToken" }` is sent, its refresh session. Every request re-checks that the admin still exists and is active.
 
 ### Filtering and pagination
 

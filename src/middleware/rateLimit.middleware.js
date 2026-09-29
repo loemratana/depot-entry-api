@@ -34,3 +34,12 @@ export const loginLimiter = rateLimit({
     skipSuccessfulRequests: true,
     handler: limitReached("Too many login attempts. Please try again in 15 minutes")
 });
+
+// Only failed refreshes count, so normal use is never limited
+export const refreshLimiter = rateLimit({
+    ...common,
+    windowMs: 15 * 60 * 1000,
+    limit: config.rateLimit.loginMax,
+    skipSuccessfulRequests: true,
+    handler: limitReached("Too many attempts. Please log in again in 15 minutes")
+});

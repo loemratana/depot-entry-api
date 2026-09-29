@@ -14,6 +14,8 @@ process.env.MONGODB_URI = process.env.MONGODB_URI.replace(/\/[^/?]+(\?|$)/, `/${
 process.env.MINIO_BUCKET = "client-documents-test";
 process.env.MAX_FILE_SIZE_MB = "1";
 process.env.MAX_FILES_PER_SUBMISSION = "3";
+process.env.JWT_EXPIRES_IN = "14d";
+process.env.REFRESH_TOKEN_EXPIRES_DAYS = "30";
 process.env.ADMIN_EMAIL = "test-admin@example.com";
 process.env.ADMIN_PASSWORD = "test-password-123";
 

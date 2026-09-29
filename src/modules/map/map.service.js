@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import config from "../../config/env.js";
 import { getPresignedUrl, URL_EXPIRY_SECONDS } from "../../config/minio.js";
 import { Submission } from "../submission/submission.model.js";
 import { buildSubmissionFilter, toGps } from "../submission/submission.service.js";
@@ -42,16 +43,18 @@ export const listMapPoints = async (query) => {
                 "files.originalName": 1
             }
         }
-    ]);
+    ]).option({ maxTimeMS: config.queryTimeoutMs });
 
     const truncated = rows.length > MAX_MAP_POINTS;
     const urlExpiresAt = new Date(Date.now() + URL_EXPIRY_SECONDS * 1000).toISOString();
 
-    const points = [];
-    for (const row of rows.slice(0, MAX_MAP_POINTS)) {
+    const located = rows.slice(0, MAX_MAP_POINTS).flatMap((row) => {
         const gps = toGps(row.files);
-        if (!gps) continue;
-        points.push({
+        return gps ? [{ row, gps }] : [];
+    });
+    // Links are signed locally (no network call), all at once rather than one by one
+    const points = await Promise.all(
+        located.map(async ({ row, gps }) => ({
             id: row.files._id.toString(),
             photoId: gps.photoId,
             submissionId: row._id.toString(),
@@ -71,8 +74,8 @@ export const listMapPoints = async (query) => {
             // Short-lived, generated per request, never stored; loaded only when a popup opens
             photoUrl: await getPresignedUrl(row.files.objectKey, row.files.originalName),
             photoUrlExpiresAt: urlExpiresAt
-        });
-    }
+        }))
+    );
 
     return { points, truncated };
 };

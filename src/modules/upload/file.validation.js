@@ -29,11 +29,14 @@ const readHeader = async (filePath) => {
     }
 };
 
-export const detectFileType = async (filePath) => {
-    const header = await readHeader(filePath);
+/** Detects an allowed file type from the first bytes of a buffer */
+export const detectBufferType = (buffer) => {
+    const header = buffer.subarray(0, 16);
     if (header.length < 4) return null;
     return SIGNATURES.find((signature) => signature.test(header)) ?? null;
 };
+
+export const detectFileType = async (filePath) => detectBufferType(await readHeader(filePath));
 
 /**
  * Verifies each uploaded file by content, not by the client-declared MIME type

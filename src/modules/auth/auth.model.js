@@ -46,3 +46,27 @@ revokedTokenSchema.index({ jti: 1 }, { unique: true });
 revokedTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export const RevokedToken = mongoose.model("RevokedToken", revokedTokenSchema);
+
+/**
+ * Refresh tokens. Only a SHA-256 hash of the token is stored. Each refresh
+ * marks the token used and issues a new one in the same family (rotation);
+ * presenting a used token again revokes the whole family (theft detection).
+ * Documents are removed automatically once expired.
+ */
+const refreshTokenSchema = new mongoose.Schema(
+    {
+        tokenHash: { type: String, required: true },
+        adminId: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", required: true },
+        // One family per login; every rotated token shares it
+        family: { type: String, required: true },
+        expiresAt: { type: Date, required: true },
+        usedAt: { type: Date, default: null }
+    },
+    { timestamps: { createdAt: true, updatedAt: false } }
+);
+
+refreshTokenSchema.index({ tokenHash: 1 }, { unique: true });
+refreshTokenSchema.index({ family: 1 });
+refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export const RefreshToken = mongoose.model("RefreshToken", refreshTokenSchema);

@@ -32,7 +32,41 @@ const duplicateKeyField = (error) =>
     error?.code === 11000 ? Object.keys(error.keyPattern || error.keyValue || {})[0] : null;
 
 const findByIdempotencyKey = (idempotencyKey) =>
-    Submission.findOne({ idempotencyKey }).select("submissionNo").lean();
+    Submission.findOne({ idempotencyKey }).select("submissionNo +pendingStock").lean();
+
+/**
+ * Writes the stock report saved on the outlet (pendingStock), then clears it.
+ * The report reuses the outlet's _id, so running this twice (a retry, a restart,
+ * two requests at once) still leaves exactly one report.
+ */
+const completePendingStock = async (submission) => {
+    if (!submission?.pendingStock) return;
+    await StockReport.updateOne(
+        { _id: submission._id },
+        { $setOnInsert: { ...submission.pendingStock, outletId: submission._id } },
+        { upsert: true }
+    );
+    await Submission.updateOne({ _id: submission._id }, { $unset: { pendingStock: 1 } });
+};
+
+/** A replayed request finishes a stock report left pending by the first attempt */
+const replay = async (existing) => {
+    await completePendingStock(existing);
+    return { submissionNo: existing.submissionNo, replayed: true };
+};
+
+/**
+ * Finishes stock reports left pending by a stopped process (normally none).
+ * Run at startup; safe to run at any time and more than once.
+ */
+export const completePendingStockReports = async ({ limit = 500 } = {}) => {
+    const pending = await Submission.find({ pendingStock: { $exists: true } })
+        .select("+pendingStock")
+        .limit(limit)
+        .lean();
+    for (const submission of pending) await completePendingStock(submission);
+    return pending.length;
+};
 
 const invalidReferences = (errors) => ApiError.validation(errors, "Invalid location or Sale GB selection");
 
@@ -124,16 +158,22 @@ const verifySitePhotos = async (sitePhotos, gpsEntries = []) => {
 
 /**
  * Order of operations (compensation strategy):
- *   1. validate files by content   2. validate references + hierarchy
- *   3. upload files to MinIO        4. insert the MongoDB document
+ *   1. validate files by content   2. validate references + hierarchy + stock
+ *   3. upload files to MinIO        4. insert the outlet, with its stock report
+ *                                      as pendingStock in the same single write
+ *   5. write the stock report (same _id as the outlet), then clear pendingStock
  * If step 3 partially fails, the objects from this request are removed.
  * If step 4 fails, every object uploaded in step 3 is removed.
+ * If step 5 fails, the outlet and its files are removed (all or nothing). If the
+ * process stops during step 5, or that clean-up fails, the pendingStock left on
+ * the outlet is finished by a retry with the same Idempotency-Key or at the next
+ * start, so an outlet never silently loses its stock.
  * `uploadedBy` is the admin id when an admin creates the submission.
  */
 export const createSubmission = async ({ input, files, sitePhotos = [], idempotencyKey, uploadedBy = null }) => {
     if (idempotencyKey) {
         const existing = await findByIdempotencyKey(idempotencyKey);
-        if (existing) return { submissionNo: existing.submissionNo, replayed: true };
+        if (existing) return replay(existing);
     }
 
     // Site photos alone satisfy "at least one file"; documents are checked as before
@@ -161,7 +201,25 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
         ...saleFields,
         files: uploadedFiles,
         idempotencyKey: idempotencyKey || undefined,
-        submittedAt
+        submittedAt,
+        // Saved with the outlet in one write; turned into the stock report below
+        pendingStock: stockItems
+            ? {
+                  outletName: input.clientName,
+                  provinceId: locationFields.provinceId,
+                  provinceNameKh: locationFields.provinceNameKh,
+                  provinceNameEn: locationFields.provinceNameEn,
+                  districtId: locationFields.districtId,
+                  districtNameKh: locationFields.districtNameKh,
+                  districtNameEn: locationFields.districtNameEn,
+                  communeId: locationFields.communeId,
+                  communeNameKh: locationFields.communeNameKh,
+                  communeNameEn: locationFields.communeNameEn,
+                  items: stockItems,
+                  reportedAt: submittedAt,
+                  submittedBy: uploadedBy
+              }
+            : undefined
     };
 
     try {
@@ -181,34 +239,25 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
         // A concurrent request with the same Idempotency-Key won the race
         if (duplicateKeyField(error) === "idempotencyKey") {
             const existing = await findByIdempotencyKey(idempotencyKey);
-            if (existing) return { submissionNo: existing.submissionNo, replayed: true };
+            if (existing) return replay(existing);
         }
 
         throw error;
     }
 
-    if (stockItems) {
+    if (document.pendingStock) {
         try {
-            await StockReport.create({
-                outletId: submissionId,
-                outletName: document.clientName,
-                provinceId: locationFields.provinceId,
-                provinceNameKh: locationFields.provinceNameKh,
-                provinceNameEn: locationFields.provinceNameEn,
-                districtId: locationFields.districtId,
-                districtNameKh: locationFields.districtNameKh,
-                districtNameEn: locationFields.districtNameEn,
-                communeId: locationFields.communeId,
-                communeNameKh: locationFields.communeNameKh,
-                communeNameEn: locationFields.communeNameEn,
-                items: stockItems,
-                reportedAt: submittedAt,
-                submittedBy: uploadedBy
-            });
+            await completePendingStock(document);
         } catch (error) {
-            // Never keep an outlet whose stock was lost: undo the outlet and its files
-            await Submission.deleteOne({ _id: submissionId });
-            await removeUploadedObjects(uploadedFiles.map((file) => file.objectKey));
+            // All or nothing: undo the outlet and its files. If this clean-up itself fails,
+            // pendingStock stays on the outlet and is finished by a retry or at the next start.
+            try {
+                await Submission.deleteOne({ _id: submissionId, pendingStock: { $exists: true } });
+                await StockReport.deleteOne({ _id: submissionId });
+                await removeUploadedObjects(uploadedFiles.map((file) => file.objectKey));
+            } catch (cleanupError) {
+                console.error(`Outlet ${submissionId}: stock report pending, clean-up failed:`, cleanupError.message);
+            }
             throw error;
         }
     }
@@ -288,10 +337,18 @@ export const removeSubmissionFile = async (id, fileId) => {
 };
 
 /** Deletes the submission, then its stored files (a failed file cleanup is logged, not fatal) */
+/**
+ * Stock reports go first, then the outlet, then its files. If the process stops
+ * part-way, no stock report is left pointing at a deleted outlet; deleting again
+ * finishes the job.
+ */
 export const deleteSubmission = async (id) => {
-    const doc = await Submission.findByIdAndDelete(id).select("files.objectKey").lean();
+    const existing = await Submission.exists({ _id: id });
+    if (!existing) throw ApiError.notFound("Submission not found");
+    await StockReport.deleteMany({ outletId: existing._id });
+    const doc = await Submission.findOneAndDelete({ _id: existing._id }).select("files.objectKey").lean();
+    // Deleted by a concurrent request in the meantime
     if (!doc) throw ApiError.notFound("Submission not found");
-    await StockReport.deleteMany({ outletId: doc._id });
     await removeUploadedObjects(doc.files.map((file) => file.objectKey));
 };
 
@@ -374,8 +431,13 @@ export const listSubmissions = async (query) => {
     const { page, limit, skip } = getPagination(query);
 
     const [docs, total] = await Promise.all([
-        Submission.find(filter, LIST_PROJECTION).sort(buildSort(query)).skip(skip).limit(limit).lean(),
-        Submission.countDocuments(filter)
+        Submission.find(filter, LIST_PROJECTION)
+            .sort(buildSort(query))
+            .skip(skip)
+            .limit(limit)
+            .maxTimeMS(config.queryTimeoutMs)
+            .lean(),
+        Submission.countDocuments(filter).maxTimeMS(config.queryTimeoutMs)
     ]);
 
     return {

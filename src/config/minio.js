@@ -37,6 +37,11 @@ export const getStorageStatus = async () => {
 export const putObjectFromFile = (objectKey, filePath, mimeType) =>
     minioClient.fPutObject(BUCKET, objectKey, filePath, { "Content-Type": mimeType });
 
+export const putObjectFromBuffer = (objectKey, buffer, mimeType) =>
+    minioClient.putObject(BUCKET, objectKey, buffer, buffer.length, { "Content-Type": mimeType });
+
+export const getObjectStream = (objectKey) => minioClient.getObject(BUCKET, objectKey);
+
 export const removeObjects = async (objectKeys) => {
     if (objectKeys.length === 0) return;
     await minioClient.removeObjects(BUCKET, objectKeys);

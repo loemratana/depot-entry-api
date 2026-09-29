@@ -102,6 +102,7 @@ const mapWithLimit = async (items, limit, worker) => {
 export const buildSubmissionsExport = async (query) => {
     const docs = await Submission.find(buildSubmissionFilter(query), EXPORT_PROJECTION)
         .sort(buildSort(query))
+        .maxTimeMS(config.exportQueryTimeoutMs)
         .lean();
 
     // Decide which files are embedded before downloading anything, to respect the budget

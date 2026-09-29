@@ -1,9 +1,11 @@
 import ExcelJS from "exceljs";
 import mongoose from "mongoose";
+import config from "../../config/env.js";
 import ApiError from "../../utils/ApiError.js";
 import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import { buildPagination, escapeRegex, getPagination } from "../../utils/pagination.js";
 import { Brand } from "./brand.model.js";
+import { logoPath } from "./catalog.service.js";
 import { Product } from "./product.model.js";
 import { MEASURE_KEYS, STOCK_MEASURES, measuresOf } from "./stock.constants.js";
 import { StockReport } from "./stockReport.model.js";
@@ -24,6 +26,8 @@ export const listActiveCatalog = async () => {
             name: brand.name,
             nameKh: brand.nameKh,
             measures: measuresOf(brand),
+            // Relative to /api; null when the brand has no logo
+            logoUrl: logoPath(brand),
             products: products
                 .filter((product) => product.brandId.equals(brand._id))
                 .map((product) => ({ id: product._id.toString(), name: product.name }))
@@ -119,8 +123,8 @@ export const listStockReports = async (query) => {
     const filter = buildStockFilter(query);
     const { page, limit, skip } = getPagination(query);
     const [docs, total] = await Promise.all([
-        StockReport.find(filter).sort(SORT).skip(skip).limit(limit).lean(),
-        StockReport.countDocuments(filter)
+        StockReport.find(filter).sort(SORT).skip(skip).limit(limit).maxTimeMS(config.queryTimeoutMs).lean(),
+        StockReport.countDocuments(filter).maxTimeMS(config.queryTimeoutMs)
     ]);
     return { data: docs.map(toReport), pagination: buildPagination({ page, limit, total }) };
 };
@@ -157,7 +161,10 @@ export const streamStockExport = async (query, outputStream) => {
         }))
     );
 
-    const docs = await StockReport.find(buildStockFilter(query)).sort(SORT).lean();
+    const docs = await StockReport.find(buildStockFilter(query))
+        .sort(SORT)
+        .maxTimeMS(config.exportQueryTimeoutMs)
+        .lean();
     const known = new Set(productColumns.map((p) => p.id));
     for (const doc of docs) {
         for (const item of doc.items) {

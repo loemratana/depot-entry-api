@@ -339,7 +339,9 @@ const swaggerSpec = {
                                 properties: {
                                     token: { type: "string" },
                                     tokenType: { type: "string" },
-                                    expiresAt: { type: "string", format: "date-time" },
+                                    expiresAt: { type: "string", format: "date-time", description: "Access token expiry (JWT_EXPIRES_IN, default 14 days)" },
+                                    refreshToken: { type: "string", description: "Send to /admin/auth/refresh for a new session" },
+                                    refreshExpiresAt: { type: "string", format: "date-time", description: "REFRESH_TOKEN_EXPIRES_DAYS, default 30 days" },
                                     admin: ref("Admin")
                                 }
                             }),
@@ -349,7 +351,9 @@ const swaggerSpec = {
                                 data: {
                                     token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
                                     tokenType: "Bearer",
-                                    expiresAt: "2026-09-28T18:00:00.000Z",
+                                    expiresAt: "2026-10-12T10:00:00.000Z",
+                                    refreshToken: "q3Zb…(64 characters)",
+                                    refreshExpiresAt: "2026-10-28T10:00:00.000Z",
                                     admin: {
                                         id: ID,
                                         name: "Administrator",
@@ -373,6 +377,31 @@ const swaggerSpec = {
                 }
             }
         },
+        "/admin/auth/refresh": {
+            post: {
+                tags: ["Admin – Auth"],
+                summary: "Refresh the session",
+                description:
+                    "Exchanges a refresh token for a new access token **and a new refresh token**; the old refresh token stops working " +
+                    "(rotation). Presenting an already-used refresh token again ends that whole session. Same response as login.",
+                requestBody: {
+                    required: true,
+                    content: json(
+                        { type: "object", required: ["refreshToken"], properties: { refreshToken: { type: "string" } } },
+                        { refreshToken: "q3Zb…" }
+                    )
+                },
+                responses: {
+                    200: { description: "New access and refresh tokens (same shape as login)" },
+                    400: response("ValidationError"),
+                    401: {
+                        description: "Refresh token expired, used or revoked — log in again",
+                        content: json(ref("ErrorResponse"), { success: false, message: "Session expired. Please log in again" })
+                    },
+                    429: response("TooManyRequests")
+                }
+            }
+        },
         "/admin/auth/me": {
             get: {
                 tags: ["Admin – Auth"],
@@ -388,7 +417,12 @@ const swaggerSpec = {
             post: {
                 tags: ["Admin – Auth"],
                 summary: "Log out (revokes this token)",
+                description: "Send the refresh token in the body to end the refresh session too (optional).",
                 security: [{ bearerAuth: [] }],
+                requestBody: {
+                    required: false,
+                    content: json({ type: "object", properties: { refreshToken: { type: "string" } } })
+                },
                 responses: {
                     200: { description: "Logged out", content: json(ref("MessageResponse"), { success: true, message: "Logged out successfully" }) },
                     401: response("Unauthorized")

@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import mongoose from "mongoose";
+import config from "../../config/env.js";
 import { buildPagination, escapeRegex } from "../../utils/pagination.js";
 import ApiError from "../../utils/ApiError.js";
 import { nameKey, parseWorkbook, syncLocations } from "./location.import.js";
@@ -211,7 +212,7 @@ export const listLocationRows = async ({ search, provinceId, page, limit }) => {
         }
     );
 
-    const [result] = await Province.aggregate(pipeline);
+    const [result] = await Province.aggregate(pipeline).option({ maxTimeMS: config.queryTimeoutMs });
     return {
         data: result.rows,
         pagination: buildPagination({ page, limit, total: result.total[0]?.count ?? 0 })
@@ -271,6 +272,12 @@ export const createLocation = async (level, { parentId, nameKh, nameEn = "" }) =
 
     await assertUniqueName(level, parent ? { [parent.field]: doc[parent.field] } : {}, nameKh);
     const created = await Model.create(doc);
+
+    // The parent may have been deleted while this was being added: never leave an orphan
+    if (parent && !(await parent.Model.exists({ _id: doc[parent.field] }))) {
+        await Model.deleteOne({ _id: created._id });
+        throw ApiError.validation([{ field: "parentId", message: `Selected ${parent.label} not found` }]);
+    }
     return toAdminJson(created);
 };
 
@@ -289,11 +296,9 @@ export const updateLocation = async (level, id, changes) => {
     return toAdminJson(doc);
 };
 
-export const deleteLocation = async (level, id) => {
-    const { Model, label } = LEVELS[level];
-    const doc = await Model.findById(id);
-    if (!doc) throw ApiError.notFound(`${label} not found`);
-
+/** Throws 409 when the location still has children or submissions */
+const assertUnused = async (level, doc) => {
+    const { label } = LEVELS[level];
     const children = CHILDREN[level];
     if (children) {
         const count = await children.Model.countDocuments({ [children.field]: doc._id });
@@ -310,6 +315,37 @@ export const deleteLocation = async (level, id) => {
             `${label} "${doc.nameKh}" is used by ${used} submission${used === 1 ? "" : "s"}. Deactivate it instead of deleting`
         );
     }
+};
 
-    await doc.deleteOne();
+/**
+ * Deletes a location nobody uses, without transactions:
+ *   1. deactivate it, so new submissions stop choosing it
+ *   2. check it has no children and no submissions (else put isActive back, 409)
+ *   3. delete it, then check again; anything added in between (a child, or a
+ *      submission already in progress) puts the location back and returns 409
+ * A child added concurrently is also removed by createLocation when its parent
+ * is gone, so either way no record is left pointing at a missing location.
+ */
+export const deleteLocation = async (level, id) => {
+    const { Model, label } = LEVELS[level];
+    const doc = await Model.findById(id).lean();
+    if (!doc) throw ApiError.notFound(`${label} not found`);
+
+    await Model.updateOne({ _id: doc._id }, { $set: { isActive: false } });
+    try {
+        await assertUnused(level, doc);
+    } catch (error) {
+        await Model.updateOne({ _id: doc._id }, { $set: { isActive: doc.isActive } });
+        throw error;
+    }
+
+    const deleted = await Model.deleteOne({ _id: doc._id });
+    if (deleted.deletedCount === 0) throw ApiError.notFound(`${label} not found`);
+
+    try {
+        await assertUnused(level, doc);
+    } catch (error) {
+        await Model.collection.insertOne(doc);
+        throw error;
+    }
 };

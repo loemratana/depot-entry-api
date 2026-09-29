@@ -31,6 +31,11 @@ const multerMessage = (err) => {
     }
 };
 
+const withRetryAfter = (apiError, seconds) => {
+    apiError.retryAfterSeconds = seconds;
+    return apiError;
+};
+
 const normalizeError = (err) => {
     if (err instanceof ApiError) return err;
 
@@ -62,6 +67,14 @@ const normalizeError = (err) => {
 
     if (DB_UNAVAILABLE_ERRORS.has(err.name)) return ApiError.serviceUnavailable("Database temporarily unavailable");
 
+    // A query hit its time limit (maxTimeMS) or no connection became free in time
+    if (err.code === 50 || err.codeName === "MaxTimeMSExpired") {
+        return withRetryAfter(ApiError.serviceUnavailable("The request took too long. Please narrow the filters or try again"), 10);
+    }
+    if (/WaitQueueTimeout/.test(err.name ?? "")) {
+        return withRetryAfter(ApiError.serviceUnavailable("The server is busy. Please try again in a moment"), 5);
+    }
+
     // MinIO client errors (S3Error etc.) and connection failures to storage
     if (err.name === "S3Error" || err.isStorageError || NETWORK_ERROR_CODES.has(err.code)) {
         return ApiError.serviceUnavailable("File storage temporarily unavailable");
@@ -91,6 +104,8 @@ const errorHandler = (err, req, res, next) => {
     };
 
     if (apiError.errors) body.errors = apiError.errors;
+
+    if (apiError.retryAfterSeconds) res.set("Retry-After", String(apiError.retryAfterSeconds));
 
     if (!config.isProduction && apiError.statusCode >= 500 && err.stack) {
         body.stack = err.stack;

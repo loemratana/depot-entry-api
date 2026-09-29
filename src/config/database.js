@@ -26,6 +26,8 @@ export const connectDatabase = async () => {
     await mongoose.connect(config.mongodbUri, {
         maxPoolSize: config.mongodbMaxPoolSize,
         minPoolSize: config.mongodbMinPoolSize,
+        // Under load, fail fast (503) instead of letting requests queue for a connection forever
+        waitQueueTimeoutMS: config.mongodbWaitQueueTimeoutMs,
         serverSelectionTimeoutMS: 5000
     });
 };

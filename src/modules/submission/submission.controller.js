@@ -51,13 +51,20 @@ export const getSubmission = asyncHandler(async (req, res) => {
 
 // ---------- Admin CRUD ----------
 
+// Idempotency-Key is optional here too: a double click or retry with the same key adds one outlet
 export const adminCreateSubmission = asyncHandler(async (req, res) => {
-    const { submissionNo } = await submissionService.createSubmission({
+    const idempotencyKey = readIdempotencyKey(req);
+
+    const { submissionNo, replayed } = await submissionService.createSubmission({
         input: req.validated.body,
         files: req.files,
-        uploadedBy: req.admin._id
+        uploadedBy: req.admin._id,
+        idempotencyKey
     });
-    sendSuccess(res, { statusCode: 201, message: "Client added", data: { submissionNo } });
+
+    if (replayed) res.set("Idempotent-Replayed", "true");
+
+    sendSuccess(res, { statusCode: replayed ? 200 : 201, message: "Client added", data: { submissionNo } });
 });
 
 export const updateSubmission = asyncHandler(async (req, res) => {

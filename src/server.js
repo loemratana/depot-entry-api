@@ -3,6 +3,7 @@ import app from "./app.js";
 import { connectDatabase, disconnectDatabase } from "./config/database.js";
 import { ensureBucket } from "./config/minio.js";
 import { backfillSaleNameKeys } from "./modules/sale/sale.model.js";
+import { completePendingStockReports } from "./modules/submission/submission.service.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -43,6 +44,14 @@ const start = async () => {
     try {
         await connectDatabase();
         await backfillSaleNameKeys();
+
+        // Finishes stock reports interrupted by a previous stop (normally none)
+        try {
+            const finished = await completePendingStockReports();
+            if (finished) console.log(`Finished ${finished} pending stock report(s)`);
+        } catch (error) {
+            console.error("Could not finish pending stock reports:", error.message);
+        }
 
         // Storage problems should not stop admins from browsing data, so this is non-fatal.
         // Submissions return 503 until MinIO is reachable.

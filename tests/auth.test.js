@@ -1,6 +1,9 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { ADMIN, Admin, api, createAdmin, start, stop } from "./helpers.js";
+
+const { RefreshToken } = await import("../src/modules/auth/auth.model.js");
 
 before(async () => {
     await start();
@@ -85,5 +88,90 @@ describe("admin authentication", () => {
             const res = await api(path, { method });
             assert.equal(res.status, 401, `${method} ${path}`);
         }
+    });
+});
+
+describe("refresh tokens", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const loginSession = async () => (await api("/admin/auth/login", { method: "POST", json: ADMIN })).body.data;
+    const refresh = (refreshToken) => api("/admin/auth/refresh", { method: "POST", json: { refreshToken } });
+
+    test("login returns a 14-day access token and a 30-day refresh token (stored only as a hash)", async () => {
+        const session = await loginSession();
+        const accessDays = (new Date(session.expiresAt) - Date.now()) / DAY;
+        const refreshDays = (new Date(session.refreshExpiresAt) - Date.now()) / DAY;
+        assert.ok(accessDays > 13.9 && accessDays <= 14, `access ${accessDays}`);
+        assert.ok(refreshDays > 29.9 && refreshDays <= 30, `refresh ${refreshDays}`);
+        assert.ok(session.refreshToken.length >= 40);
+        assert.equal(await RefreshToken.countDocuments({ tokenHash: session.refreshToken }), 0);
+    });
+
+    test("refresh returns a new working access token and a new refresh token (rotation)", async () => {
+        const session = await loginSession();
+        const res = await refresh(session.refreshToken);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.equal(res.headers.get("cache-control"), "no-store");
+        const next = res.body.data;
+        assert.notEqual(next.token, session.token);
+        assert.notEqual(next.refreshToken, session.refreshToken);
+        assert.equal(next.admin.email, ADMIN.email);
+        assert.equal((await api("/admin/auth/me", { token: next.token })).status, 200);
+
+        // The used token no longer works; the new one does
+        assert.equal((await refresh(session.refreshToken)).status, 401);
+        assert.equal((await refresh(next.refreshToken)).status, 200);
+    });
+
+    test("concurrent refreshes with the same token: exactly one succeeds", async () => {
+        const session = await loginSession();
+        const results = await Promise.all(Array.from({ length: 5 }, () => refresh(session.refreshToken)));
+        assert.equal(results.filter((r) => r.status === 200).length, 1);
+        assert.ok(results.every((r) => r.status === 200 || r.status === 401));
+        // A race within the grace period does not end the session
+        const winner = results.find((r) => r.status === 200).body.data;
+        assert.equal((await refresh(winner.refreshToken)).status, 200);
+    });
+
+    test("reusing an old refresh token after the grace period ends that whole session", async () => {
+        const session = await loginSession();
+        const next = (await refresh(session.refreshToken)).body.data;
+        // Pretend the first token was used a minute ago
+        const tokenHash = crypto.createHash("sha256").update(session.refreshToken).digest("hex");
+        await RefreshToken.updateOne({ tokenHash }, { $set: { usedAt: new Date(Date.now() - 60_000) } });
+        assert.equal((await refresh(session.refreshToken)).status, 401);
+        assert.equal((await refresh(next.refreshToken)).status, 401, "the newer token is revoked too");
+    });
+
+    test("expired, unknown and malformed refresh tokens are rejected", async () => {
+        const session = await loginSession();
+        await RefreshToken.updateMany({}, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+        assert.equal((await refresh(session.refreshToken)).status, 401);
+        assert.equal((await refresh("x".repeat(64))).status, 401);
+        assert.equal((await refresh("short")).status, 400);
+        assert.equal((await api("/admin/auth/refresh", { method: "POST", json: {} })).status, 400);
+    });
+
+    test("a deactivated admin cannot refresh", async () => {
+        const session = await loginSession();
+        await Admin.updateOne({ email: ADMIN.email }, { $set: { isActive: false } });
+        try {
+            assert.equal((await refresh(session.refreshToken)).status, 401);
+        } finally {
+            await Admin.updateOne({ email: ADMIN.email }, { $set: { isActive: true } });
+        }
+    });
+
+    test("logout with the refresh token ends the session; logout without a body still works", async () => {
+        const session = await loginSession();
+        const out = await api("/admin/auth/logout", {
+            method: "POST",
+            token: session.token,
+            json: { refreshToken: session.refreshToken }
+        });
+        assert.equal(out.status, 200);
+        assert.equal((await refresh(session.refreshToken)).status, 401);
+
+        const other = await loginSession();
+        assert.equal((await api("/admin/auth/logout", { method: "POST", token: other.token })).status, 200);
     });
 });

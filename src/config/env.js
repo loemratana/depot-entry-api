@@ -24,7 +24,8 @@ const schema = z
         CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
         JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters"),
-        JWT_EXPIRES_IN: z.string().default("8h"),
+        JWT_EXPIRES_IN: z.string().default("14d"),
+        REFRESH_TOKEN_EXPIRES_DAYS: int(30, { min: 1, max: 365 }),
 
         ADMIN_NAME: z.string().optional(),
         ADMIN_EMAIL: z.string().optional(),
@@ -44,6 +45,17 @@ const schema = z
         ALLOWED_FILE_TYPES: z.string().default("image/jpeg,image/png,image/webp,application/pdf"),
         // Total size of photos embedded in one Excel export (they are held in memory while it is built)
         EXPORT_MAX_IMAGE_MB: int(200, { min: 1, max: 2000 }),
+        // Exports with photos built at the same time per process (each holds its photos in memory)
+        EXPORT_CONCURRENCY: int(1, { min: 1, max: 10 }),
+        // Exports allowed to wait for a slot, and how long they wait, before a 503 "try again"
+        EXPORT_QUEUE_MAX: int(4, { min: 0, max: 100 }),
+        EXPORT_QUEUE_TIMEOUT_SECONDS: int(120, { min: 1, max: 3600 }),
+
+        // A request waiting longer than this for a free database connection fails instead of hanging
+        MONGODB_WAIT_QUEUE_TIMEOUT_MS: int(10000, { min: 100 }),
+        // Upper time limits for heavy reads (lists, map, exports); a slow query ends with a 503
+        DB_QUERY_TIMEOUT_MS: int(15000, { min: 100 }),
+        DB_EXPORT_QUERY_TIMEOUT_MS: int(120000, { min: 100 }),
 
         PUBLIC_SUBMISSION_RATE_LIMIT_WINDOW_MINUTES: int(15, { min: 1 }),
         PUBLIC_SUBMISSION_RATE_LIMIT_MAX: int(20, { min: 1 }),
@@ -100,6 +112,9 @@ const config = Object.freeze({
     mongodbUri: env.MONGODB_URI,
     mongodbMaxPoolSize: env.MONGODB_MAX_POOL_SIZE,
     mongodbMinPoolSize: env.MONGODB_MIN_POOL_SIZE,
+    mongodbWaitQueueTimeoutMs: env.MONGODB_WAIT_QUEUE_TIMEOUT_MS,
+    queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS,
+    exportQueryTimeoutMs: env.DB_EXPORT_QUERY_TIMEOUT_MS,
 
     corsOrigin: env.CORS_ORIGIN.split(",")
         .map((origin) => origin.trim())
@@ -107,6 +122,7 @@ const config = Object.freeze({
 
     jwtSecret: env.JWT_SECRET,
     jwtExpiresIn: env.JWT_EXPIRES_IN,
+    refreshTokenExpiresDays: env.REFRESH_TOKEN_EXPIRES_DAYS,
 
     seedAdmin: {
         name: env.ADMIN_NAME,
@@ -135,7 +151,10 @@ const config = Object.freeze({
     },
 
     export: {
-        maxImageBytes: env.EXPORT_MAX_IMAGE_MB * 1024 * 1024
+        maxImageBytes: env.EXPORT_MAX_IMAGE_MB * 1024 * 1024,
+        concurrency: env.EXPORT_CONCURRENCY,
+        maxQueue: env.EXPORT_QUEUE_MAX,
+        queueTimeoutMs: env.EXPORT_QUEUE_TIMEOUT_SECONDS * 1000
     },
 
     rateLimit: {

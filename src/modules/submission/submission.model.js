@@ -64,6 +64,11 @@ const submissionSchema = new mongoose.Schema(
         // Client-supplied Idempotency-Key header; never returned by the API
         idempotencyKey: { type: String, default: undefined, select: false },
 
+        // The outlet's stock report, saved in the same write as the outlet and removed once
+        // the report exists. If the process stops in between, a retry or the next start
+        // finishes it (see completePendingStock), so stock is never lost. Never returned.
+        pendingStock: { type: mongoose.Schema.Types.Mixed, default: undefined, select: false },
+
         submittedAt: { type: Date, required: true, default: Date.now }
     },
     { timestamps: true }
@@ -85,6 +90,11 @@ submissionSchema.index({ communeId: 1, submittedAt: -1 });
 submissionSchema.index({ saleGbId: 1, submittedAt: -1 });
 // Phone search / lookup of repeat clients
 submissionSchema.index({ phone: 1 });
+// Finds the few outlets whose stock report is still pending (normally none)
+submissionSchema.index(
+    { _id: 1, pendingStock: 1 },
+    { name: "pending_stock", partialFilterExpression: { pendingStock: { $exists: true } } }
+);
 // Geotagged site photos; also makes MongoDB reject malformed GeoJSON. Files without a location are not indexed
 submissionSchema.index({ "files.location": "2dsphere" });
 
