@@ -170,7 +170,12 @@ const swaggerSpec = {
                     "Locations must form a valid hierarchy and, like the Sale GB, be active. " +
                     "Names are looked up and snapshotted by the server.\n\n" +
                     "Send an `Idempotency-Key` header to make retries safe: repeating a key returns the original " +
-                    "submission number with `200` and `Idempotent-Replayed: true`.",
+                    "submission number with `200` and `Idempotent-Replayed: true`.\n\n" +
+                    "**Site photos with GPS (optional):** send each photo as its own part named `sitePhotos[<photoId>]` " +
+                    "(JPG, PNG or WebP) and one `sitePhotoMeta` JSON field listing the GPS of every photo by the same photoId. " +
+                    "Photos and GPS entries are matched by photoId, never by order; each photo needs exactly one entry. " +
+                    "Site photos count toward the file limit and alone satisfy the one-file minimum. " +
+                    "GPS is reported by the browser and is not verified evidence.",
                 parameters: [
                     {
                         name: "Idempotency-Key",
@@ -194,7 +199,21 @@ const swaggerSpec = {
                                     districtId: { type: "string", example: DISTRICT.id },
                                     communeId: { type: "string", example: COMMUNE.id },
                                     saleGbId: { type: "string", example: SALE.id },
-                                    files: { type: "array", items: { type: "string", format: "binary" } }
+                                    files: { type: "array", items: { type: "string", format: "binary" } },
+                                    sitePhotoMeta: {
+                                        type: "string",
+                                        description:
+                                            "JSON array of { photoId, latitude (-90..90), longitude (-180..180), accuracy (metres, >= 0), capturedAt (ISO date-time) }",
+                                        example: JSON.stringify([
+                                            {
+                                                photoId: "3f1c9a4e7b2d4c6e8a0b1c2d3e4f5a6b",
+                                                latitude: 11.5564,
+                                                longitude: 104.9282,
+                                                accuracy: 12.5,
+                                                capturedAt: "2026-09-29T05:40:00.000Z"
+                                            }
+                                        ])
+                                    }
                                 }
                             },
                             encoding: { files: { contentType: config.upload.allowedMimeTypes.join(", ") } }
@@ -244,6 +263,54 @@ const swaggerSpec = {
                     415: response("UnsupportedFileType"),
                     429: response("TooManyRequests"),
                     503: response("ServiceUnavailable")
+                }
+            }
+        },
+
+        "/admin/map/submissions": {
+            get: {
+                tags: ["Admin – Map"],
+                summary: "Geotagged site photos for the outlet map",
+                description:
+                    "One point per site photo with GPS, oldest capture first (the order of the optional capture-sequence line). " +
+                    "Photos without GPS, including all older submissions, are left out. Dates filter by submission date, as on the outlet list. " +
+                    "`photoUrl` is a short-lived presigned URL. At most 2000 points are returned; when there are more, `message` says so.",
+                security: [{ bearerAuth: [] }],
+                parameters: [
+                    ...filterParams.filter((p) => ["provinceId", "districtId", "communeId", "dateFrom", "dateTo"].includes(p.name)),
+                    queryParam("submissionId", ref("ObjectId"), "Only this outlet's photos (used by View on map)")
+                ],
+                responses: {
+                    200: {
+                        description: "Map points (an empty array when nothing matches)",
+                        content: json(success({ type: "array", items: { type: "object" } }), {
+                            success: true,
+                            data: [
+                                {
+                                    id: "66f7a1c2e4b0a1b2c3d4e5aa",
+                                    photoId: "3f1c9a4e7b2d4c6e8a0b1c2d3e4f5a6b",
+                                    submissionId: ID,
+                                    clientName: "សុខា",
+                                    phone: "012345678",
+                                    provinceNameKh: PROVINCE.nameKh,
+                                    provinceNameEn: PROVINCE.nameEn,
+                                    districtNameKh: DISTRICT.nameKh,
+                                    districtNameEn: DISTRICT.nameEn,
+                                    communeNameKh: COMMUNE.nameKh,
+                                    communeNameEn: COMMUNE.nameEn,
+                                    latitude: 11.5564,
+                                    longitude: 104.9282,
+                                    accuracy: 12.5,
+                                    capturedAt: "2026-09-29T05:40:00.000Z",
+                                    submittedAt: "2026-09-29T05:41:10.000Z",
+                                    photoUrl: "http://localhost:9000/client-documents/submissions/66f7.../3f1c....jpg?X-Amz-Algorithm=...",
+                                    photoUrlExpiresAt: "2026-09-29T05:56:10.000Z"
+                                }
+                            ]
+                        })
+                    },
+                    400: response("ValidationError"),
+                    401: response("Unauthorized")
                 }
             }
         },

@@ -1,0 +1,36 @@
+[
+    {
+        "brand": "GANZBERG",
+        "brandKh": "ស្រាបៀរហ្គែនប៊ឺក",
+        "products": [
+            "Ganzberg Snow",
+            "Ganzberg Gold"
+        ]
+    },
+    {
+        "brand": "GANZBERG BEER WEDDING",
+        "brandKh": "ស្រាបៀរហ្គេនបឺគរោងការ",
+        "measures": [
+            "cases"
+        ],
+        "products": [
+            "ស្រាបៀរហ្គេនបឺគ Gold រោងការ",
+            "ស្រាបៀរហ្គេនបឺគ Snow រោងការ"
+        ]
+    },
+    {
+        "brand": "IDOL",
+        "brandKh": "អាយដល",
+        "products": [
+            "IDOL"
+        ]
+    },
+    {
+        "brand": "BOOSTRONG",
+        "brandKh": "ប៊ូស្ត្រង",
+        "products": [
+            "BOOSTRONG POWER PLUS",
+            "BOOSTRONG SUPER"
+        ]
+    }
+]

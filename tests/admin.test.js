@@ -97,7 +97,7 @@ describe("admin submission list", () => {
     test("list items have nested location/sale objects and a file count", async () => {
         const item = (await list("?limit=1")).body.data[0];
         assert.deepEqual(Object.keys(item).sort(), [
-            "clientName", "commune", "district", "fileCount", "id", "phone", "province", "saleGb", "submissionNo", "submittedAt"
+            "clientName", "commune", "district", "fileCount", "hasGps", "id", "phone", "province", "saleGb", "submissionNo", "submittedAt"
         ]);
         assert.equal(item.fileCount, 1);
         assert.equal(item.province.id, fx.p2._id.toString());

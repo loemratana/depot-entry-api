@@ -1,7 +1,7 @@
 import { Router } from "express";
 import validate from "../../middleware/validate.middleware.js";
 import { submissionLimiter } from "../../middleware/rateLimit.middleware.js";
-import { uploadSubmissionFiles } from "../../middleware/upload.middleware.js";
+import { uploadSubmissionFiles, uploadSubmissionWithSitePhotos } from "../../middleware/upload.middleware.js";
 import {
     createSubmissionSchema,
     listSubmissionsSchema,
@@ -16,7 +16,7 @@ export const publicSubmissionRoutes = Router();
 publicSubmissionRoutes.post(
     "/",
     submissionLimiter,
-    uploadSubmissionFiles,
+    uploadSubmissionWithSitePhotos,
     validate(createSubmissionSchema),
     submissionController.createSubmission
 );

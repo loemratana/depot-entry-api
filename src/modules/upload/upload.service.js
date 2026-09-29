@@ -32,7 +32,9 @@ export const uploadSubmissionFiles = async (submissionId, files, { uploadedBy = 
                 mimeType: file.detectedMimeType,
                 size: file.size,
                 uploadedAt: null,
-                uploadedBy
+                uploadedBy,
+                // Site photos carry their GPS fields (photoId, location, accuracy, capturedAt)
+                ...file.gps
             }
         };
     });

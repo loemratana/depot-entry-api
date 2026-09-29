@@ -1,5 +1,67 @@
 import { z } from "zod";
 import { dateFilter, objectId, paginationQuery, personName, phone } from "../../utils/validators.js";
+import { stockItemSchema } from "../stock/stock.validation.js";
+
+// Optional stock quantities sent with the outlet form; multipart sends them as a JSON string
+const stockItems = z.preprocess(
+    (value) => {
+        if (value === undefined || value === "") return undefined;
+        if (typeof value !== "string") return value;
+        try {
+            return JSON.parse(value);
+        } catch {
+            return value; // reported as "expected array" below
+        }
+    },
+    z
+        .array(stockItemSchema)
+        .refine((items) => new Set(items.map((i) => i.productId)).size === items.length, {
+            message: "Each product may appear only once"
+        })
+        .optional()
+);
+
+/** Client-generated photo id: letters, digits and dashes (UUID or random hex) */
+export const PHOTO_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+
+// Phone clocks drift, so a capture time slightly ahead of the server is tolerated
+const CAPTURE_CLOCK_SKEW_MS = 24 * 60 * 60 * 1000;
+const EARLIEST_CAPTURE = new Date("2020-01-01T00:00:00Z");
+
+/** GPS reported by the browser for one site photo; matched to its file by photoId */
+const sitePhotoGpsSchema = z.object({
+    photoId: z.string({ error: "photoId is required" }).regex(PHOTO_ID_PATTERN, "Invalid photoId"),
+    latitude: z.number({ error: "latitude must be a number" }).min(-90).max(90),
+    longitude: z.number({ error: "longitude must be a number" }).min(-180).max(180),
+    // Metres; browsers report the 95% confidence radius
+    accuracy: z.number({ error: "accuracy must be a number" }).min(0).max(1_000_000),
+    capturedAt: z.iso
+        .datetime({ offset: true, error: "capturedAt must be an ISO date-time" })
+        .transform((value) => new Date(value))
+        .refine((date) => date >= EARLIEST_CAPTURE && date.getTime() <= Date.now() + CAPTURE_CLOCK_SKEW_MS, {
+            message: "capturedAt is out of range"
+        })
+});
+
+// Multipart sends the GPS list as one JSON string
+const sitePhotoMeta = z.preprocess(
+    (value) => {
+        if (value === undefined || value === "") return undefined;
+        if (typeof value !== "string") return value;
+        try {
+            return JSON.parse(value);
+        } catch {
+            return value; // reported as "expected array" below
+        }
+    },
+    z
+        .array(sitePhotoGpsSchema)
+        .max(50)
+        .refine((items) => new Set(items.map((i) => i.photoId)).size === items.length, {
+            message: "Each photoId may appear only once"
+        })
+        .optional()
+);
 
 // Optional Sale GB, chosen from the list (saleGbId) or typed (saleGbName); typed names are matched or added
 const saleGbName = personName("Sale GB", { min: 2, max: 150 });
@@ -18,7 +80,9 @@ export const createSubmissionSchema = {
             provinceId: objectId("provinceId"),
             districtId: objectId("districtId"),
             communeId: objectId("communeId"),
-            ...saleGbFields
+            ...saleGbFields,
+            stockItems,
+            sitePhotoMeta
         })
 };
 

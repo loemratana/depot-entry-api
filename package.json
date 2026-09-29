@@ -13,11 +13,15 @@
     "seed:admin": "node src/scripts/seed-admin.js",
     "seed:sales": "node src/scripts/seed-sales.js",
     "seed:sample": "node src/scripts/seed-sample.js",
+    "seed:products": "node src/scripts/seed-products.js",
+    "migrate:remove-retired-measures": "node src/scripts/migrate-remove-retired-measures.js",
     "import:locations": "node src/scripts/import-locations.js",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\""
   },
   "nodemonConfig": {
-    "watch": ["src"],
+    "watch": [
+      "src"
+    ],
     "ext": "js,json"
   },
   "engines": {

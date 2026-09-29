@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import multer from "multer";
 import config from "../config/env.js";
 import ApiError from "../utils/ApiError.js";
+import { PHOTO_ID_PATTERN } from "../modules/submission/submission.validation.js";
 
 export const UPLOAD_TMP_DIR = path.join(os.tmpdir(), "client-management-uploads");
 fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
@@ -77,6 +78,76 @@ export const uploadSubmissionFiles = (req, res, next) => {
             return next(
                 ApiError.validation([{ field: "files", message: `A maximum of ${config.upload.maxFiles} files is allowed` }])
             );
+        }
+
+        next();
+    });
+};
+
+// ---------- Public form: documents plus geotagged site photos ----------
+
+// Each site photo is sent in its own part named sitePhotos[<photoId>], so the
+// GPS entry with the same photoId is matched by name, never by position
+const SITE_PHOTO_FIELD = /^sitePhotos\[([^\]]*)\]$/;
+const SITE_PHOTO_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const multerAny = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        if (file.fieldname === "files" || file.fieldname === "files[]") return fileFilter(req, file, cb);
+
+        const photoId = SITE_PHOTO_FIELD.exec(file.fieldname)?.[1];
+        if (photoId === undefined) {
+            return cb(ApiError.validation([{ field: file.fieldname, message: "Unexpected file field" }]));
+        }
+        if (!PHOTO_ID_PATTERN.test(photoId)) {
+            return cb(ApiError.validation([{ field: "sitePhotos", message: "Invalid photoId" }]));
+        }
+        if (!SITE_PHOTO_MIME_TYPES.has(file.mimetype?.toLowerCase())) {
+            return cb(
+                new ApiError(415, "Unsupported file type", [
+                    { field: `sitePhotos.${photoId}`, message: "A site photo must be a JPG, PNG or WebP image" }
+                ])
+            );
+        }
+        cb(null, true);
+    },
+    limits: {
+        fileSize: config.upload.maxFileSizeBytes,
+        // Documents and site photos together stay within the per-submission limit
+        files: config.upload.maxFiles,
+        fields: 20,
+        // sitePhotoMeta and stockItems are JSON strings
+        fieldSize: 64 * 1024,
+        parts: config.upload.maxFiles + 20
+    }
+}).any();
+
+/**
+ * Same as uploadSubmissionFiles, plus site photos: req.files holds documents
+ * and other photos, req.sitePhotos holds [{ photoId, file }].
+ */
+export const uploadSubmissionWithSitePhotos = (req, res, next) => {
+    multerAny(req, res, (err) => {
+        const all = Array.isArray(req.files) ? req.files : [];
+        for (const file of all) file.originalname = decodeOriginalName(file.originalname);
+        res.on("close", () => cleanupTempFiles(all));
+
+        req.files = all.filter((file) => file.fieldname === "files" || file.fieldname === "files[]");
+        req.sitePhotos = all
+            .filter((file) => SITE_PHOTO_FIELD.test(file.fieldname))
+            .map((file) => ({ photoId: SITE_PHOTO_FIELD.exec(file.fieldname)[1], file }));
+
+        if (err) return next(err);
+
+        if (all.length > config.upload.maxFiles) {
+            return next(
+                ApiError.validation([{ field: "files", message: `A maximum of ${config.upload.maxFiles} files is allowed` }])
+            );
+        }
+        const ids = req.sitePhotos.map((photo) => photo.photoId);
+        if (new Set(ids).size !== ids.length) {
+            return next(ApiError.validation([{ field: "sitePhotos", message: "Each site photo needs its own photoId" }]));
         }
 
         next();

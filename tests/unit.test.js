@@ -58,8 +58,9 @@ describe("submission number", () => {
     });
 
     test("does not repeat across many generations", () => {
-        const set = new Set(Array.from({ length: 20000 }, () => generateSubmissionNo()));
-        assert.equal(set.size, 20000);
+        // 2,000 draws from 40 random bits: a chance repeat is ~1 in 500,000 (the unique index retries anyway)
+        const set = new Set(Array.from({ length: 2000 }, () => generateSubmissionNo()));
+        assert.equal(set.size, 2000);
     });
 });
 

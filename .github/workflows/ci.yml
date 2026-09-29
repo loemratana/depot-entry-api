@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch/PR
+# Cancel superseded test runs on the same branch/PR (deploys are never cancelled, see below)
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -25,6 +25,8 @@ jobs:
       matrix:
         node: [22, 24]
 
+    # Throwaway MongoDB for the tests only. The tests wipe their database, so they
+    # must never run against the real MongoDB on the VPS.
     services:
       mongodb:
         image: mongo:8
@@ -93,3 +95,92 @@ jobs:
       - name: MinIO logs on failure
         if: failure()
         run: docker logs minio || true
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate production compose file
+        run: |
+          # compose reads env_file: .env, which only exists on the VPS
+          touch .env
+          docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: Build image
+        run: docker build -t depot-entry-api:ci .
+
+      - name: Image starts Node and contains no secrets
+        run: |
+          docker run --rm depot-entry-api:ci node -e "console.log('node', process.version)"
+          if docker run --rm depot-entry-api:ci sh -c 'ls -a /app' | grep -E '^\.env$'; then
+            echo ".env must not be inside the image"; exit 1
+          fi
+
+  deploy:
+    name: Deploy to VPS
+    needs: [test, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One deploy at a time; a newer push waits instead of killing a deploy halfway
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_HOST_KEY }}
+          port: 2244
+
+          script: |
+            set -e
+
+            echo "==> Go to application directory"
+            cd /opt/apps/client-management
+
+            if [ ! -f .env ]; then
+              echo "Missing /opt/apps/client-management/.env"
+              exit 1
+            fi
+
+            echo "==> Pull latest code"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Build and start API"
+            docker compose -f docker-compose.prod.yml up -d --build api
+
+            echo "==> Wait for the API to report healthy"
+            for i in $(seq 1 30); do
+              status=$(docker inspect --format '{{.State.Health.Status}}' depot-entry-api 2>/dev/null || echo missing)
+
+              if [ "$status" = "healthy" ]; then
+                echo "API is healthy"
+                break
+              fi
+
+              if [ "$i" = "30" ]; then
+                echo "API did not become healthy (last status: $status)"
+                docker compose -f docker-compose.prod.yml logs --tail=100 api
+                exit 1
+              fi
+
+              sleep 5
+            done
+
+            echo "==> Remove unused images"
+            docker image prune -f
+
+            echo "==> Deployment status"
+            docker compose -f docker-compose.prod.yml ps
+
+            echo "==> Deployment completed successfully"

@@ -8,6 +8,8 @@ import { buildPagination, escapeRegex, getPagination } from "../../utils/paginat
 import { normalizePhone } from "../../utils/validators.js";
 import { resolveLocationSelection } from "../location/location.service.js";
 import { resolveSaleSelection } from "../sale/sale.service.js";
+import { buildStockItems } from "../stock/stock.service.js";
+import { StockReport } from "../stock/stockReport.model.js";
 import { validateSubmissionFiles } from "../upload/file.validation.js";
 import { removeUploadedObjects, uploadSubmissionFiles } from "../upload/upload.service.js";
 import { Submission } from "./submission.model.js";
@@ -63,6 +65,64 @@ const resolveSaleFields = async ({ saleGbId, saleGbName }) => {
 };
 
 /**
+ * Pairs each site photo with the GPS entry that has the same photoId, verifies
+ * the photo by content (images only) and attaches the GPS as GeoJSON.
+ * Every photo needs GPS and every GPS entry needs its photo.
+ */
+const verifySitePhotos = async (sitePhotos, gpsEntries = []) => {
+    const gpsById = new Map(gpsEntries.map((entry) => [entry.photoId, entry]));
+    const photoIds = new Set(sitePhotos.map((photo) => photo.photoId));
+
+    const errors = [
+        ...sitePhotos
+            .filter((photo) => !gpsById.has(photo.photoId))
+            .map((photo) => ({
+                field: `sitePhotos.${photo.photoId}`,
+                message: `"${photo.file.originalname}" has no GPS location`
+            })),
+        ...gpsEntries
+            .filter((entry) => !photoIds.has(entry.photoId))
+            .map((entry) => ({ field: `sitePhotoMeta.${entry.photoId}`, message: "GPS entry has no matching photo" }))
+    ];
+    if (errors.length) throw ApiError.validation(errors, "Site photos and GPS do not match");
+    if (sitePhotos.length === 0) return [];
+
+    let verified;
+    try {
+        verified = await validateSubmissionFiles(sitePhotos.map((photo) => photo.file));
+    } catch (error) {
+        // Report problems against the photo, not a position in a list
+        if (error instanceof ApiError && Array.isArray(error.errors)) {
+            error.errors = error.errors.map((e) => {
+                const index = Number(/^files\.(\d+)$/.exec(e.field ?? "")?.[1]);
+                return Number.isInteger(index) ? { ...e, field: `sitePhotos.${sitePhotos[index].photoId}` } : e;
+            });
+        }
+        throw error;
+    }
+
+    // validateSubmissionFiles keeps the input order when every file is valid
+    return verified.map((file, index) => {
+        const { photoId } = sitePhotos[index];
+        if (!file.detectedMimeType.startsWith("image/")) {
+            throw new ApiError(415, "Unsupported file type", [
+                { field: `sitePhotos.${photoId}`, message: "A site photo must be a JPG, PNG or WebP image" }
+            ]);
+        }
+        const gps = gpsById.get(photoId);
+        return {
+            ...file,
+            gps: {
+                photoId,
+                location: { type: "Point", coordinates: [gps.longitude, gps.latitude] },
+                accuracy: gps.accuracy,
+                capturedAt: gps.capturedAt
+            }
+        };
+    });
+};
+
+/**
  * Order of operations (compensation strategy):
  *   1. validate files by content   2. validate references + hierarchy
  *   3. upload files to MinIO        4. insert the MongoDB document
@@ -70,15 +130,24 @@ const resolveSaleFields = async ({ saleGbId, saleGbName }) => {
  * If step 4 fails, every object uploaded in step 3 is removed.
  * `uploadedBy` is the admin id when an admin creates the submission.
  */
-export const createSubmission = async ({ input, files, idempotencyKey, uploadedBy = null }) => {
+export const createSubmission = async ({ input, files, sitePhotos = [], idempotencyKey, uploadedBy = null }) => {
     if (idempotencyKey) {
         const existing = await findByIdempotencyKey(idempotencyKey);
         if (existing) return { submissionNo: existing.submissionNo, replayed: true };
     }
 
-    const verifiedFiles = await validateSubmissionFiles(files);
+    // Site photos alone satisfy "at least one file"; documents are checked as before
+    const verifiedPhotos = await verifySitePhotos(sitePhotos, input.sitePhotoMeta);
+    const verifiedFiles = [
+        ...(files?.length || verifiedPhotos.length === 0 ? await validateSubmissionFiles(files) : []),
+        ...verifiedPhotos
+    ];
     const locationFields = await resolveLocationFields(input);
     const saleFields = await resolveSaleFields(input);
+    // The outlet's stock is checked before any file is uploaded
+    const stockItems = input.stockItems?.length
+        ? await buildStockItems(input.stockItems, { fieldPrefix: "stockItems" })
+        : null;
 
     const submissionId = new mongoose.Types.ObjectId();
     const uploadedFiles = await uploadSubmissionFiles(submissionId, verifiedFiles, { uploadedBy });
@@ -100,7 +169,7 @@ export const createSubmission = async ({ input, files, idempotencyKey, uploadedB
             document.submissionNo = generateSubmissionNo(submittedAt);
             try {
                 await Submission.create(document);
-                return { submissionNo: document.submissionNo, replayed: false };
+                break;
             } catch (error) {
                 if (duplicateKeyField(error) === "submissionNo" && attempt < MAX_NUMBER_ATTEMPTS) continue;
                 throw error;
@@ -117,6 +186,34 @@ export const createSubmission = async ({ input, files, idempotencyKey, uploadedB
 
         throw error;
     }
+
+    if (stockItems) {
+        try {
+            await StockReport.create({
+                outletId: submissionId,
+                outletName: document.clientName,
+                provinceId: locationFields.provinceId,
+                provinceNameKh: locationFields.provinceNameKh,
+                provinceNameEn: locationFields.provinceNameEn,
+                districtId: locationFields.districtId,
+                districtNameKh: locationFields.districtNameKh,
+                districtNameEn: locationFields.districtNameEn,
+                communeId: locationFields.communeId,
+                communeNameKh: locationFields.communeNameKh,
+                communeNameEn: locationFields.communeNameEn,
+                items: stockItems,
+                reportedAt: submittedAt,
+                submittedBy: uploadedBy
+            });
+        } catch (error) {
+            // Never keep an outlet whose stock was lost: undo the outlet and its files
+            await Submission.deleteOne({ _id: submissionId });
+            await removeUploadedObjects(uploadedFiles.map((file) => file.objectKey));
+            throw error;
+        }
+    }
+
+    return { submissionNo: document.submissionNo, replayed: false };
 };
 
 // ---------- Admin edit / delete ----------
@@ -194,6 +291,7 @@ export const removeSubmissionFile = async (id, fileId) => {
 export const deleteSubmission = async (id) => {
     const doc = await Submission.findByIdAndDelete(id).select("files.objectKey").lean();
     if (!doc) throw ApiError.notFound("Submission not found");
+    await StockReport.deleteMany({ outletId: doc._id });
     await removeUploadedObjects(doc.files.map((file) => file.objectKey));
 };
 
@@ -245,6 +343,8 @@ const toListItem = (doc) => ({
     commune: { id: doc.communeId.toString(), nameKh: doc.communeNameKh, nameEn: doc.communeNameEn },
     saleGb: doc.saleGbId ? { id: doc.saleGbId.toString(), name: doc.saleGbName } : null,
     fileCount: doc.fileCount ?? doc.files?.length ?? 0,
+    // At least one site photo with GPS, i.e. the outlet can be shown on the map
+    hasGps: Boolean(doc.hasGps ?? doc.files?.some((file) => file.location?.type === "Point")),
     submittedAt: doc.submittedAt
 });
 
@@ -264,7 +364,9 @@ const LIST_PROJECTION = {
     saleGbId: 1,
     saleGbName: 1,
     submittedAt: 1,
-    fileCount: { $size: "$files" }
+    fileCount: { $size: "$files" },
+    // "$files.location.type" lists the location type of every file that has one
+    hasGps: { $in: ["Point", { $ifNull: ["$files.location.type", []] }] }
 };
 
 export const listSubmissions = async (query) => {
@@ -279,6 +381,19 @@ export const listSubmissions = async (query) => {
     return {
         data: docs.map(toListItem),
         pagination: buildPagination({ page, limit, total })
+    };
+};
+
+/** GeoJSON [lng, lat] back to plain latitude/longitude, or null when the file has no valid GPS */
+export const toGps = (file) => {
+    const [longitude, latitude] = file.location?.coordinates ?? [];
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+    return {
+        photoId: file.photoId ?? null,
+        latitude,
+        longitude,
+        accuracy: file.accuracy ?? null,
+        capturedAt: file.capturedAt ?? null
     };
 };
 
@@ -299,7 +414,9 @@ export const getSubmissionDetails = async (id) => {
             // null for files the client sent from the public form
             uploadedByAdmin: Boolean(file.uploadedBy),
             url: await getPresignedUrl(file.objectKey, file.originalName),
-            urlExpiresAt
+            urlExpiresAt,
+            // Site photos only; null for documents and older submissions
+            gps: toGps(file)
         }))
     );
 

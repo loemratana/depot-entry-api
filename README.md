@@ -66,6 +66,45 @@ Data lives in the named volumes `mongodb_data` and `minio_data`, so `docker comp
 
 MinIO no longer publishes free images to Docker Hub or Quay, so Compose uses Chainguard's maintained build (`cgr.dev/chainguard/minio`). It has no shell, so there is no container healthcheck. Use `GET /api/health`, which checks MinIO directly. The app creates the bucket on startup if it is missing.
 
+`docker-compose.yml` is for local development only.
+
+## Deploy to VPS (CI/CD)
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. **test**: the test suite on Node 22 and 24, against a throwaway MongoDB and MinIO inside GitHub Actions. The tests wipe their database, so they never touch the MongoDB on the VPS.
+2. **docker**: builds the production image and validates `docker-compose.prod.yml`.
+3. **deploy** (pushes to `main` only, after both pass): connects to the VPS over SSH, pulls `main`, runs `docker compose -f docker-compose.prod.yml up -d --build`, and fails if the API does not report healthy.
+
+Production runs the API and MinIO in Docker. **MongoDB is not in Docker**: the API uses the MongoDB already on the VPS through `MONGODB_URI` in the server's `.env`. The API container uses host networking, so `mongodb://...@127.0.0.1:27017/...` on the VPS works as-is. It listens on `PORT`; put Nginx (HTTPS) in front of it.
+
+### One-time server setup
+
+```bash
+git clone https://github.com/loemratana/depot-entry-api.git ~/apps/client-management
+cd ~/apps/client-management
+cp .env.example .env    # fill in real values: MONGODB_URI (VPS MongoDB), JWT_SECRET, MINIO_*, CORS_ORIGIN, TRUST_PROXY
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml exec api npm run seed:admin
+```
+
+Production `.env` notes:
+
+- `NODE_ENV=production`, and `TRUST_PROXY=1` behind Nginx (for correct client IPs in rate limiting).
+- `MINIO_ENDPOINT` / `MINIO_PORT` / `MINIO_USE_SSL` must be the address admins' browsers can reach (for example `files.example.com`, 443, `true` via Nginx). Photo and document links are presigned for that host.
+- The camera and GPS on the public form only work when it is opened over **https**.
+
+### GitHub secrets (Settings → Secrets and variables → Actions)
+
+| Secret | Value |
+| --- | --- |
+| `VPS_HOST` | Server IP or hostname |
+| `VPS_USER` | SSH user that owns `~/apps/client-management` and can run `docker` |
+| `VPS_SSH_KEY` | Private key for that user (the public key goes in the server's `~/.ssh/authorized_keys`) |
+| `VPS_HOST_KEY` | Server host key fingerprint: the `SHA256:...` part of `ssh-keyscan -p 2244 <host> \| ssh-keygen -lf -` |
+
+The workflow connects on SSH port `2244`.
+
 ## Seeding
 
 ### Admin

@@ -1,0 +1,51 @@
+# Production (VPS). Used by the deploy job:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# There is deliberately NO MongoDB service here: the API uses the MongoDB that
+# already runs on the VPS, set by MONGODB_URI in the server's .env file.
+# (docker-compose.yml is only for local development.)
+
+services:
+  api:
+    build: .
+    image: depot-entry-api:latest
+    container_name: depot-entry-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    # Host networking: the API reaches MongoDB on the VPS at 127.0.0.1 exactly
+    # like a normal Node process, and listens on PORT from .env (put Nginx in front)
+    network_mode: host
+    depends_on:
+      - minio
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Private file storage for uploaded documents and site photos.
+  # Remove this service if the VPS already runs MinIO; point MINIO_* in .env at it instead.
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: depot-entry-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9000:9000" # S3 API (expose publicly only through Nginx + HTTPS)
+      - "127.0.0.1:9001:9001" # web console
+    volumes:
+      - minio_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  minio_data:
+    name: depot-entry-minio-data

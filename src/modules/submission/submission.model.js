@@ -2,6 +2,15 @@ import mongoose from "mongoose";
 
 const { ObjectId } = mongoose.Schema.Types;
 
+// GeoJSON point: coordinates are [longitude, latitude]
+const pointSchema = new mongoose.Schema(
+    {
+        type: { type: String, enum: ["Point"], required: true },
+        coordinates: { type: [Number], required: true, default: undefined }
+    },
+    { _id: false }
+);
+
 const fileSchema = new mongoose.Schema(
     {
         originalName: { type: String, required: true },
@@ -11,7 +20,14 @@ const fileSchema = new mongoose.Schema(
         mimeType: { type: String, required: true },
         size: { type: Number, required: true },
         uploadedAt: { type: Date, required: true },
-        uploadedBy: { type: ObjectId, ref: "Admin", default: null }
+        uploadedBy: { type: ObjectId, ref: "Admin", default: null },
+
+        // Site photos only: device-reported GPS at capture time. Absent on
+        // documents, other photos and older submissions (never an empty object)
+        photoId: { type: String, default: undefined },
+        location: { type: pointSchema, default: undefined },
+        accuracy: { type: Number, default: undefined },
+        capturedAt: { type: Date, default: undefined }
     },
     { _id: true }
 );
@@ -69,5 +85,7 @@ submissionSchema.index({ communeId: 1, submittedAt: -1 });
 submissionSchema.index({ saleGbId: 1, submittedAt: -1 });
 // Phone search / lookup of repeat clients
 submissionSchema.index({ phone: 1 });
+// Geotagged site photos; also makes MongoDB reject malformed GeoJSON. Files without a location are not indexed
+submissionSchema.index({ "files.location": "2dsphere" });
 
 export const Submission = mongoose.model("Submission", submissionSchema);
