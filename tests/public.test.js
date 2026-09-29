@@ -2,6 +2,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import {
     FILES,
+    Sale,
     Submission,
     api,
     createLocations,
@@ -143,7 +144,7 @@ describe("public submission", () => {
         const res = await submit({ clientName: " a ", phone: "12345" }, [["a.png", FILES.png()]]);
         assert.equal(res.status, 400);
         const fields = res.body.errors.map((e) => e.field).sort();
-        assert.deepEqual(fields, ["clientName", "communeId", "districtId", "phone", "provinceId", "saleGbId"]);
+        assert.deepEqual(fields, ["clientName", "communeId", "districtId", "phone", "provinceId"]);
     });
 
     test("rejects a district that does not belong to the province", async () => {
@@ -158,10 +159,20 @@ describe("public submission", () => {
         assert.deepEqual(res.body.errors, [{ field: "communeId", message: "Commune does not belong to the selected district" }]);
     });
 
-    test("rejects inactive commune and inactive Sale GB", async () => {
-        const res = await submit(validFields(fx, { communeId: fx.cInactive._id, saleGbId: fx.inactiveSale._id }));
+    test("rejects an inactive commune", async () => {
+        const res = await submit(validFields(fx, { communeId: fx.cInactive._id }));
         assert.equal(res.status, 400);
-        assert.deepEqual(res.body.errors.map((e) => e.field).sort(), ["communeId", "saleGbId"]);
+        assert.deepEqual(res.body.errors.map((e) => e.field), ["communeId"]);
+    });
+
+    test("rejects an inactive Sale GB, by id or by typed name", async () => {
+        const byId = await submit(validFields(fx, { saleGbId: fx.inactiveSale._id }));
+        assert.equal(byId.status, 400);
+        assert.deepEqual(byId.body.errors.map((e) => e.field), ["saleGbId"]);
+
+        const byName = await submit(validFields(fx, { saleGbId: undefined, saleGbName: " test  sale b " }));
+        assert.equal(byName.status, 400);
+        assert.deepEqual(byName.body.errors, [{ field: "saleGbName", message: "This Sale GB is no longer available" }]);
     });
 
     test("rejects references that do not exist", async () => {
@@ -174,6 +185,56 @@ describe("public submission", () => {
         const before = (await listBucketKeys()).length;
         await submit(validFields(fx, { communeId: fx.c2._id }));
         assert.equal((await listBucketKeys()).length, before);
+    });
+});
+
+describe("typed Sale GB name", () => {
+    const byName = (name, overrides = {}) => validFields(fx, { saleGbId: undefined, saleGbName: name, ...overrides });
+
+    test("an existing name matches regardless of case and spacing", async () => {
+        const before = await Sale.countDocuments();
+        const res = await submit(byName("  test   SALE a "));
+        assert.equal(res.status, 201);
+        assert.equal(await Sale.countDocuments(), before);
+
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        assert.ok(doc.saleGbId.equals(fx.sale._id));
+        assert.equal(doc.saleGbName, "Test Sale A");
+    });
+
+    test("a new name is added to the Sale GB list and offered on the public list", async () => {
+        const res = await submit(byName("Brand  New Sale"));
+        assert.equal(res.status, 201);
+
+        const sale = await Sale.findOne({ name: "Brand New Sale" });
+        assert.ok(sale);
+        assert.equal(sale.isActive, true);
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        assert.ok(doc.saleGbId.equals(sale._id));
+
+        const pub = await api("/public/sales");
+        assert.ok(pub.body.data.some((s) => s.name === "Brand New Sale"));
+    });
+
+    test("concurrent first uses of a new name create exactly one Sale GB", async () => {
+        const results = await Promise.all(Array.from({ length: 6 }, () => submit(byName("Race Sale Name"))));
+        assert.ok(results.every((r) => r.status === 201), results.map((r) => r.status).join(","));
+        assert.equal(await Sale.countDocuments({ name: /race sale name/i }), 1);
+    });
+
+    test("a rejected submission does not add the typed name", async () => {
+        const res = await submit(byName("Never Added Sale", { communeId: fx.c2._id }));
+        assert.equal(res.status, 400);
+        assert.equal(await Sale.countDocuments({ name: "Never Added Sale" }), 0);
+    });
+
+    test("Sale GB is optional on the public form", async () => {
+        const res = await submit(byName(""));
+        assert.equal(res.status, 201);
+
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        assert.equal(doc.saleGbId, null);
+        assert.equal(doc.saleGbName, null);
     });
 });
 

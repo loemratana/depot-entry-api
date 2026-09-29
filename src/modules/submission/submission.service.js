@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import mongoose from "mongoose";
+import config from "../../config/env.js";
 import { getPresignedUrl, URL_EXPIRY_SECONDS } from "../../config/minio.js";
 import ApiError from "../../utils/ApiError.js";
 import { businessDate } from "../../utils/date.js";
@@ -31,58 +32,64 @@ const duplicateKeyField = (error) =>
 const findByIdempotencyKey = (idempotencyKey) =>
     Submission.findOne({ idempotencyKey }).select("submissionNo").lean();
 
+const invalidReferences = (errors) => ApiError.validation(errors, "Invalid location or Sale GB selection");
+
+/** Validated location hierarchy as reference + name snapshot fields */
+const resolveLocationFields = async ({ provinceId, districtId, communeId }) => {
+    const { province, district, commune, errors } = await resolveLocationSelection({ provinceId, districtId, communeId });
+    if (errors.length) throw invalidReferences(errors);
+    return {
+        provinceId: province._id,
+        provinceNameKh: province.nameKh,
+        provinceNameEn: province.nameEn,
+        districtId: district._id,
+        districtNameKh: district.nameKh,
+        districtNameEn: district.nameEn,
+        communeId: commune._id,
+        communeNameKh: commune.nameKh,
+        communeNameEn: commune.nameEn
+    };
+};
+
+/**
+ * Sale GB by id or typed name as reference + name snapshot. Called after the
+ * location check, because a typed new name adds it to the Sale GB list.
+ */
+const resolveSaleFields = async ({ saleGbId, saleGbName }) => {
+    if (!saleGbId && !saleGbName) return { saleGbId: null, saleGbName: null };
+    const { sale, errors } = await resolveSaleSelection({ saleGbId, saleGbName });
+    if (errors.length) throw invalidReferences(errors);
+    return { saleGbId: sale._id, saleGbName: sale.name };
+};
+
 /**
  * Order of operations (compensation strategy):
  *   1. validate files by content   2. validate references + hierarchy
  *   3. upload files to MinIO        4. insert the MongoDB document
  * If step 3 partially fails, the objects from this request are removed.
  * If step 4 fails, every object uploaded in step 3 is removed.
+ * `uploadedBy` is the admin id when an admin creates the submission.
  */
-export const createSubmission = async ({ input, files, idempotencyKey }) => {
+export const createSubmission = async ({ input, files, idempotencyKey, uploadedBy = null }) => {
     if (idempotencyKey) {
         const existing = await findByIdempotencyKey(idempotencyKey);
         if (existing) return { submissionNo: existing.submissionNo, replayed: true };
     }
 
     const verifiedFiles = await validateSubmissionFiles(files);
-
-    const [locations, saleSelection] = await Promise.all([
-        resolveLocationSelection(input),
-        resolveSaleSelection(input.saleGbId)
-    ]);
-
-    const referenceErrors = [...locations.errors, ...saleSelection.errors];
-    if (referenceErrors.length > 0) {
-        throw ApiError.validation(referenceErrors, "Invalid location or Sale GB selection");
-    }
-
-    const { province, district, commune } = locations;
-    const { sale } = saleSelection;
+    const locationFields = await resolveLocationFields(input);
+    const saleFields = await resolveSaleFields(input);
 
     const submissionId = new mongoose.Types.ObjectId();
-    const uploadedFiles = await uploadSubmissionFiles(submissionId, verifiedFiles);
+    const uploadedFiles = await uploadSubmissionFiles(submissionId, verifiedFiles, { uploadedBy });
 
     const submittedAt = new Date();
     const document = {
         _id: submissionId,
         clientName: input.clientName,
         phone: input.phone,
-
-        provinceId: province._id,
-        provinceNameKh: province.nameKh,
-        provinceNameEn: province.nameEn,
-
-        districtId: district._id,
-        districtNameKh: district.nameKh,
-        districtNameEn: district.nameEn,
-
-        communeId: commune._id,
-        communeNameKh: commune.nameKh,
-        communeNameEn: commune.nameEn,
-
-        saleGbId: sale._id,
-        saleGbName: sale.name,
-
+        ...locationFields,
+        ...saleFields,
         files: uploadedFiles,
         idempotencyKey: idempotencyKey || undefined,
         submittedAt
@@ -110,6 +117,84 @@ export const createSubmission = async ({ input, files, idempotencyKey }) => {
 
         throw error;
     }
+};
+
+// ---------- Admin edit / delete ----------
+
+const findSubmissionOr404 = async (id) => {
+    const doc = await Submission.findById(id).select("_id files").lean();
+    if (!doc) throw ApiError.notFound("Submission not found");
+    return doc;
+};
+
+/** Updates client fields; a changed location or Sale GB refreshes the name snapshots too */
+export const updateSubmission = async (id, changes) => {
+    await findSubmissionOr404(id);
+
+    const $set = {};
+    if (changes.clientName !== undefined) $set.clientName = changes.clientName;
+    if (changes.phone !== undefined) $set.phone = changes.phone;
+    if (changes.provinceId) Object.assign($set, await resolveLocationFields(changes));
+    if (changes.saleGbId || changes.saleGbName) Object.assign($set, await resolveSaleFields(changes));
+
+    await Submission.updateOne({ _id: id }, { $set });
+    return getSubmissionDetails(id);
+};
+
+/** Adds files uploaded by an admin, each with its own upload time; total stays within the limit */
+export const addSubmissionFiles = async (id, files, { uploadedBy }) => {
+    const doc = await findSubmissionOr404(id);
+    const verifiedFiles = await validateSubmissionFiles(files);
+
+    const maxFiles = config.upload.maxFiles;
+    if (doc.files.length + verifiedFiles.length > maxFiles) {
+        throw ApiError.validation([
+            {
+                field: "files",
+                message: `A submission can have at most ${maxFiles} files; it already has ${doc.files.length}`
+            }
+        ]);
+    }
+
+    const uploaded = await uploadSubmissionFiles(id, verifiedFiles, { uploadedBy });
+
+    // Conditional push: a concurrent add cannot take the total over the limit
+    const result = await Submission.updateOne(
+        { _id: id, [`files.${maxFiles - uploaded.length}`]: { $exists: false } },
+        { $push: { files: { $each: uploaded } } }
+    );
+    if (result.modifiedCount === 0) {
+        await removeUploadedObjects(uploaded.map((file) => file.objectKey));
+        throw ApiError.conflict(`A submission can have at most ${maxFiles} files`);
+    }
+
+    return getSubmissionDetails(id);
+};
+
+/** Removes one file; the last file cannot be removed (a submission needs at least one) */
+export const removeSubmissionFile = async (id, fileId) => {
+    const doc = await findSubmissionOr404(id);
+    const file = doc.files.find((f) => f._id.equals(fileId));
+    if (!file) throw ApiError.notFound("File not found");
+
+    // "files.1" exists = at least two files, checked atomically with the pull
+    const result = await Submission.updateOne(
+        { _id: id, "files._id": file._id, "files.1": { $exists: true } },
+        { $pull: { files: { _id: file._id } } }
+    );
+    if (result.modifiedCount === 0) {
+        throw ApiError.conflict("A submission must keep at least one file. Add another file before removing this one");
+    }
+
+    await removeUploadedObjects([file.objectKey]);
+    return getSubmissionDetails(id);
+};
+
+/** Deletes the submission, then its stored files (a failed file cleanup is logged, not fatal) */
+export const deleteSubmission = async (id) => {
+    const doc = await Submission.findByIdAndDelete(id).select("files.objectKey").lean();
+    if (!doc) throw ApiError.notFound("Submission not found");
+    await removeUploadedObjects(doc.files.map((file) => file.objectKey));
 };
 
 export const buildSubmissionFilter = ({ search, provinceId, districtId, communeId, saleGbId, dateFrom, dateTo }) => {
@@ -158,7 +243,7 @@ const toListItem = (doc) => ({
     province: { id: doc.provinceId.toString(), nameKh: doc.provinceNameKh, nameEn: doc.provinceNameEn },
     district: { id: doc.districtId.toString(), nameKh: doc.districtNameKh, nameEn: doc.districtNameEn },
     commune: { id: doc.communeId.toString(), nameKh: doc.communeNameKh, nameEn: doc.communeNameEn },
-    saleGb: { id: doc.saleGbId.toString(), name: doc.saleGbName },
+    saleGb: doc.saleGbId ? { id: doc.saleGbId.toString(), name: doc.saleGbName } : null,
     fileCount: doc.fileCount ?? doc.files?.length ?? 0,
     submittedAt: doc.submittedAt
 });
@@ -211,6 +296,8 @@ export const getSubmissionDetails = async (id) => {
             mimeType: file.mimeType,
             size: file.size,
             uploadedAt: file.uploadedAt,
+            // null for files the client sent from the public form
+            uploadedByAdmin: Boolean(file.uploadedBy),
             url: await getPresignedUrl(file.objectKey, file.originalName),
             urlExpiresAt
         }))

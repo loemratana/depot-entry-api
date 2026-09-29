@@ -60,7 +60,7 @@ describe("name key", () => {
     test("ignores spaces, zero-width characters and ្ដ/្ត", () => {
         assert.equal(nameKey("ភ្នំ ពេញ"), nameKey("ភ្នំពេញ"));
         assert.equal(nameKey("កណ្ដាល"), nameKey("កណ្តាល"));
-        assert.equal(nameKey("ឃុំ​ក"), nameKey("ឃុំក"));
+        assert.equal(nameKey("ឃុំ\u200Bក"), nameKey("ឃុំក"));
         assert.notEqual(nameKey("ឃុំក"), nameKey("ឃុំខ"));
     });
 });

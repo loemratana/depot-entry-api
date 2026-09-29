@@ -1,7 +1,19 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { Sale, Submission, api, createAdmin, createLocations, login, start, stop, mongoose } from "./helpers.js";
+import {
+    FILES,
+    Sale,
+    Submission,
+    api,
+    createAdmin,
+    createLocations,
+    listBucketKeys,
+    login,
+    mongoose,
+    start,
+    stop
+} from "./helpers.js";
 
 let fx;
 let token;
@@ -210,10 +222,52 @@ describe("Excel export", () => {
         assert.match(res.headers.get("content-disposition"), /client-submissions-\d{4}-\d{2}-\d{2}\.xlsx/);
 
         const sheet = await readSheet(res.body);
+        // Seeded rows only have PDFs, so there are no photo columns; PDFs are listed by name
         assert.deepEqual(sheet.getRow(1).values.slice(1), [
-            "Submission No", "Client Name", "Phone", "Province", "District", "Commune", "Sale GB", "Submitted At"
+            "Client Name", "Phone", "Province", "District", "Commune", "Submitted At", "Other files"
         ]);
         assert.equal(sheet.rowCount, 26);
+        assert.equal(sheet.getRow(2).getCell(7).value, "a.pdf");
+        assert.ok(!sheet.getRow(1).values.includes("Submission No"), "Submission No is not exported");
+        assert.ok(!sheet.getRow(1).values.includes("Sale GB"), "Sale GB is not exported");
+    });
+
+    test("embeds each client's photos as pictures next to the row", async () => {
+        // A client with two photos and a PDF, uploaded through the admin API so the files exist in storage
+        const form = new FormData();
+        for (const [key, value] of Object.entries({
+            clientName: "Photo Client",
+            phone: "012999888",
+            provinceId: fx.p1._id,
+            districtId: fx.d1._id,
+            communeId: fx.c1._id,
+            saleGbId: fx.sale._id
+        })) form.append(key, String(value));
+        form.append("files", FILES.png(), "front.png");
+        form.append("files", FILES.jpg(), "back.jpg");
+        form.append("files", FILES.pdf(), "contract.pdf");
+        const created = await api("/admin/submissions", { method: "POST", token, form });
+        assert.equal(created.status, 201);
+
+        const res = await api(`/admin/submissions/export?search=${encodeURIComponent("Photo Client")}`, { token });
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(res.body);
+        const sheet = workbook.getWorksheet("Client Submissions");
+
+        assert.deepEqual(sheet.getRow(1).values.slice(7), ["Photo 1", "Photo 2", "Other files"]);
+        const images = sheet.getImages();
+        assert.equal(images.length, 2);
+        // Anchored in the photo columns (zero-based 6 and 7) of the client's row (zero-based 1)
+        assert.deepEqual(
+            images.map((image) => [Math.floor(image.range.tl.nativeCol), Math.floor(image.range.tl.nativeRow)]).sort(),
+            [[6, 1], [7, 1]]
+        );
+        assert.equal(sheet.getRow(2).getCell(9).value, "contract.pdf");
+
+        await api(`/admin/submissions/${created.body.data.submissionNo ? (await Submission.findOne({ clientName: "Photo Client" }))._id : ""}`, {
+            method: "DELETE",
+            token
+        });
     });
 
     test("applies the same filters as the list", async () => {
@@ -222,7 +276,7 @@ describe("Excel export", () => {
 
         const sheet = await readSheet((await api(`/admin/submissions/export${query}`, { token })).body);
         assert.equal(sheet.rowCount - 1, listTotal);
-        assert.equal(sheet.getRow(2).getCell(2).value.startsWith("សុខា"), true);
+        assert.equal(sheet.getRow(2).getCell(1).value.startsWith("សុខា"), true);
     });
 
     test("respects the date range", async () => {
@@ -261,6 +315,16 @@ describe("admin Sale GB management", () => {
         assert.equal(res.status, 409);
     });
 
+    test("duplicate name (ignoring case and spaces) is a 409, on create and rename", async () => {
+        const create = await api("/admin/sales", { method: "POST", token, json: { name: "test  sale A" } });
+        assert.equal(create.status, 409);
+        assert.equal(create.body.errors[0].field, "name");
+
+        const other = await api("/admin/sales", { method: "POST", token, json: { name: "Rename Target" } });
+        const rename = await api(`/admin/sales/${other.body.data.id}`, { method: "PATCH", token, json: { name: "TEST SALE A" } });
+        assert.equal(rename.status, 409);
+    });
+
     test("deactivating hides it from the public list; nothing is deleted", async () => {
         const sale = await Sale.findOne({ code: "NS1" });
         const res = await api(`/admin/sales/${sale._id}`, { method: "PATCH", token, json: { isActive: false } });
@@ -285,5 +349,152 @@ describe("admin Sale GB management", () => {
     test("there is no DELETE endpoint", async () => {
         const sale = await Sale.findOne({ code: "NS1" });
         assert.equal((await api(`/admin/sales/${sale._id}`, { method: "DELETE", token })).status, 404);
+    });
+});
+
+describe("admin client CRUD", () => {
+    let id;
+
+    const form = (fields, files) => {
+        const data = new FormData();
+        for (const [key, value] of Object.entries(fields)) if (value !== undefined) data.append(key, String(value));
+        for (const [name, blob] of files) data.append("files", blob, name);
+        return data;
+    };
+    const fields = (overrides = {}) => ({
+        clientName: "Admin Added",
+        phone: "012 111 222",
+        provinceId: fx.p1._id,
+        districtId: fx.d1._id,
+        communeId: fx.c1._id,
+        saleGbName: "Admin Typed Sale",
+        ...overrides
+    });
+    const details = async () => (await api(`/admin/submissions/${id}`, { token })).body.data;
+
+    test("admin creates a client with files marked as uploaded by an admin", async () => {
+        const res = await api("/admin/submissions", {
+            method: "POST",
+            token,
+            form: form(fields(), [["id.png", FILES.png()]])
+        });
+        assert.equal(res.status, 201);
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        id = doc._id.toString();
+
+        const data = await details();
+        assert.equal(data.clientName, "Admin Added");
+        assert.equal(data.phone, "012111222");
+        assert.equal(data.saleGb.name, "Admin Typed Sale");
+        assert.equal(data.files[0].uploadedByAdmin, true);
+        assert.ok(data.files[0].uploadedAt);
+    });
+
+    test("admin create validates like the public form", async () => {
+        const res = await api("/admin/submissions", { method: "POST", token, form: form(fields({ phone: "1" }), []) });
+        assert.equal(res.status, 400);
+        assert.deepEqual(res.body.errors.map((e) => e.field), ["phone"]);
+
+        const noFiles = await api("/admin/submissions", { method: "POST", token, form: form(fields(), []) });
+        assert.equal(noFiles.status, 400);
+        assert.deepEqual(noFiles.body.errors.map((e) => e.field), ["files"]);
+    });
+
+    test("updates name/phone and refreshes location + Sale GB snapshots", async () => {
+        const res = await api(`/admin/submissions/${id}`, {
+            method: "PATCH",
+            token,
+            json: {
+                clientName: "Renamed Client",
+                phone: "+855 96 123 4567",
+                provinceId: fx.p2._id.toString(),
+                districtId: fx.d2._id.toString(),
+                communeId: fx.c2._id.toString(),
+                saleGbId: fx.sale._id.toString()
+            }
+        });
+        assert.equal(res.status, 200);
+        assert.equal(res.body.data.clientName, "Renamed Client");
+        assert.equal(res.body.data.phone, "0961234567");
+        assert.equal(res.body.data.province.nameEn, "Test Province Two");
+        assert.equal(res.body.data.commune.nameEn, "Test Commune Two");
+        assert.equal(res.body.data.saleGb.name, "Test Sale A");
+    });
+
+    test("update rejects partial locations, bad hierarchy and unknown fields", async () => {
+        const partial = await api(`/admin/submissions/${id}`, { method: "PATCH", token, json: { provinceId: fx.p1._id.toString() } });
+        assert.equal(partial.status, 400);
+        assert.deepEqual(partial.body.errors.map((e) => e.field).sort(), ["communeId", "districtId"]);
+
+        const mismatch = await api(`/admin/submissions/${id}`, {
+            method: "PATCH",
+            token,
+            json: { provinceId: fx.p1._id.toString(), districtId: fx.d2._id.toString(), communeId: fx.c2._id.toString() }
+        });
+        assert.equal(mismatch.status, 400);
+        assert.equal(mismatch.body.errors[0].field, "districtId");
+
+        assert.equal((await api(`/admin/submissions/${id}`, { method: "PATCH", token, json: { submissionNo: "X" } })).status, 400);
+        assert.equal((await api(`/admin/submissions/${id}`, { method: "PATCH", token, json: {} })).status, 400);
+        assert.equal(
+            (await api(`/admin/submissions/${new mongoose.Types.ObjectId()}`, { method: "PATCH", token, json: { clientName: "Xy" } })).status,
+            404
+        );
+    });
+
+    test("adds files up to the limit, each with its own upload time", async () => {
+        const res = await api(`/admin/submissions/${id}/files`, {
+            method: "POST",
+            token,
+            form: form({}, [["second.pdf", FILES.pdf()], ["third.png", FILES.png()]])
+        });
+        assert.equal(res.status, 201);
+        assert.equal(res.body.data.files.length, 3);
+        assert.ok(res.body.data.files.every((f) => f.uploadedAt));
+
+        // Test limit is 3 files per submission
+        const over = await api(`/admin/submissions/${id}/files`, { method: "POST", token, form: form({}, [["x.png", FILES.png()]]) });
+        assert.equal(over.status, 400);
+        assert.match(over.body.errors[0].message, /at most 3 files/);
+
+        const bad = await api(`/admin/submissions/${id}/files`, { method: "POST", token, form: form({}, [["x.txt", FILES.text()]]) });
+        assert.equal(bad.status, 415);
+    });
+
+    test("removes files and deletes the stored object, but never the last file", async () => {
+        const doc = await Submission.findById(id).lean();
+        const [first, second, third] = doc.files;
+
+        for (const file of [first, second]) {
+            const res = await api(`/admin/submissions/${id}/files/${file._id}`, { method: "DELETE", token });
+            assert.equal(res.status, 200);
+        }
+        assert.deepEqual(await listBucketKeys(first.objectKey), []);
+
+        const last = await api(`/admin/submissions/${id}/files/${third._id}`, { method: "DELETE", token });
+        assert.equal(last.status, 409);
+        assert.match(last.body.message, /at least one file/);
+
+        const missing = await api(`/admin/submissions/${id}/files/${first._id}`, { method: "DELETE", token });
+        assert.equal(missing.status, 404);
+    });
+
+    test("deletes the client and its stored files", async () => {
+        const doc = await Submission.findById(id).lean();
+        const res = await api(`/admin/submissions/${id}`, { method: "DELETE", token });
+        assert.equal(res.status, 200);
+        assert.equal(await Submission.countDocuments({ _id: id }), 0);
+        assert.deepEqual(await listBucketKeys(`submissions/${id}/`), []);
+        assert.ok(doc.files.length > 0);
+        assert.equal((await api(`/admin/submissions/${id}`, { method: "DELETE", token })).status, 404);
+    });
+
+    test("every client CRUD endpoint requires login", async () => {
+        const some = new mongoose.Types.ObjectId();
+        assert.equal((await api("/admin/submissions", { method: "POST", form: new FormData() })).status, 401);
+        assert.equal((await api(`/admin/submissions/${some}`, { method: "PATCH", json: { clientName: "Xy" } })).status, 401);
+        assert.equal((await api(`/admin/submissions/${some}`, { method: "DELETE" })).status, 401);
+        assert.equal((await api(`/admin/submissions/${some}/files`, { method: "POST", form: new FormData() })).status, 401);
+        assert.equal((await api(`/admin/submissions/${some}/files/${some}`, { method: "DELETE" })).status, 401);
     });
 });

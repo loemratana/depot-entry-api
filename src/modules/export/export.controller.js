@@ -1,16 +1,17 @@
 import asyncHandler from "../../utils/asyncHandler.js";
-import { exportFileName, streamSubmissionsExport } from "./export.service.js";
+import { buildSubmissionsExport, exportFileName } from "./export.service.js";
 
 export const exportSubmissions = asyncHandler(async (req, res) => {
-    const fileName = exportFileName();
+    // Built before any headers are sent, so a failure still returns a normal JSON error
+    const { workbook } = await buildSubmissionsExport(req.validated.query);
 
     res.status(200);
     res.set({
         "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="${fileName}"`,
+        "Content-Disposition": `attachment; filename="${exportFileName()}"`,
         "Cache-Control": "no-store"
     });
 
-    // Once streaming starts, errors abort the connection (see error middleware)
-    await streamSubmissionsExport(req.validated.query, res);
+    await workbook.xlsx.write(res);
+    res.end();
 });

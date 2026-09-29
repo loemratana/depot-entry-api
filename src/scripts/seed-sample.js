@@ -5,6 +5,7 @@
  *
  *   npm run seed:sample                  # 60 submissions
  *   npm run seed:sample -- --count 200
+ *   npm run seed:sample -- --use-existing-locations   # spread over imported locations, no demo locations
  *   npm run seed:sample -- --clear       # remove all demo data and files
  *
  * --clear only removes demo records nothing real depends on. Demo locations that a real
@@ -223,7 +224,7 @@ const upsertLocations = async () => {
 const upsertSales = async () => {
     await Sale.bulkWrite(
         SALES.map(([code, name, phone]) => ({
-            updateOne: { filter: { code }, update: { $set: { name, phone, isActive: true } }, upsert: true }
+            updateOne: { filter: { code }, update: { $set: { name, nameKey: nameKey(name), phone, isActive: true } }, upsert: true }
         }))
     );
     return Sale.find({ code: DEMO });
@@ -280,14 +281,43 @@ const createSubmission = async ({ index, locations, sales, tmpDir }) => {
     });
 };
 
+/** Every active commune already in the database, with its district and province */
+const loadExistingLocations = async () => {
+    const [provinces, districts, communes] = await Promise.all([
+        Province.find({ isActive: true }).lean(),
+        District.find({ isActive: true }).lean(),
+        Commune.find({ isActive: true }).lean()
+    ]);
+    const provinceById = new Map(provinces.map((p) => [String(p._id), p]));
+    const districtById = new Map(districts.map((d) => [String(d._id), d]));
+
+    const locations = communes
+        .map((commune) => {
+            const district = districtById.get(String(commune.districtId));
+            const province = district && provinceById.get(String(district.provinceId));
+            return province ? { province, district, commune } : null;
+        })
+        .filter(Boolean);
+
+    if (locations.length === 0) {
+        throw new Error("No active locations found. Import locations first (Locations page or npm run import:locations)");
+    }
+    return locations;
+};
+
 const seed = async () => {
     const count = parseCount();
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "seed-sample-"));
 
     try {
-        const locations = await upsertLocations();
+        const useExisting = process.argv.includes("--use-existing-locations");
+        const locations = useExisting ? await loadExistingLocations() : await upsertLocations();
         const sales = await upsertSales();
-        console.log(`Demo locations: ${LOCATIONS.length} provinces, ${locations.length} communes`);
+        console.log(
+            useExisting
+                ? `Using existing locations: ${new Set(locations.map((l) => String(l.province._id))).size} provinces, ${locations.length} communes`
+                : `Demo locations: ${LOCATIONS.length} provinces, ${locations.length} communes`
+        );
         console.log(`Demo Sale GB:   ${sales.length}`);
 
         for (let i = 0; i < count; i++) {

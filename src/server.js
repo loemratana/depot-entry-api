@@ -2,6 +2,7 @@ import config from "./config/env.js";
 import app from "./app.js";
 import { connectDatabase, disconnectDatabase } from "./config/database.js";
 import { ensureBucket } from "./config/minio.js";
+import { backfillSaleNameKeys } from "./modules/sale/sale.model.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -41,6 +42,7 @@ const shutdown = async (signal, exitCode = 0) => {
 const start = async () => {
     try {
         await connectDatabase();
+        await backfillSaleNameKeys();
 
         // Storage problems should not stop admins from browsing data, so this is non-fatal.
         // Submissions return 503 until MinIO is reachable.

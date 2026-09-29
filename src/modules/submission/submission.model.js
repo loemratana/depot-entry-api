@@ -36,8 +36,9 @@ const submissionSchema = new mongoose.Schema(
         communeNameKh: { type: String, required: true },
         communeNameEn: { type: String, default: "" },
 
-        saleGbId: { type: ObjectId, ref: "Sale", required: true },
-        saleGbName: { type: String, required: true },
+        // Optional: the public form no longer asks for it; admins can set it later
+        saleGbId: { type: ObjectId, ref: "Sale", default: null },
+        saleGbName: { type: String, default: null },
 
         files: {
             type: [fileSchema],

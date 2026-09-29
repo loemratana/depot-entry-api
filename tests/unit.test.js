@@ -81,9 +81,30 @@ describe("file signature detection", () => {
     });
 });
 
+describe("export thumbnails", () => {
+    test("reads PNG and JPEG dimensions from the file header", async () => {
+        const { imageSize } = await import("../src/modules/export/export.service.js");
+
+        const png = Buffer.alloc(33);
+        png.writeUInt32BE(0x89504e47, 0);
+        png.writeUInt32BE(640, 16);
+        png.writeUInt32BE(480, 20);
+        assert.deepEqual(imageSize(png), { width: 640, height: 480 });
+
+        // SOI, then an APP0 segment, then SOF0 with height 300 / width 400
+        const jpeg = Buffer.from([
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00,
+            0xff, 0xc0, 0x00, 0x11, 0x08, 0x01, 0x2c, 0x01, 0x90, 0x03
+        ]);
+        assert.deepEqual(imageSize(jpeg), { width: 400, height: 300 });
+
+        assert.equal(imageSize(Buffer.from("%PDF-1.4")), null);
+    });
+});
+
 describe("location import parsing", () => {
     test("cleanText removes zero-width characters and normalises whitespace", () => {
-        assert.equal(cleanText("  ភ្នំ​ពេញ  \n "), "ភ្នំពេញ");
+        assert.equal(cleanText("  ភ្នំ\u200Bពេញ  \n "), "ភ្នំពេញ");
     });
 
     test("normalizeCode restores leading zeros lost in Excel", () => {
@@ -139,6 +160,37 @@ describe("location import parsing", () => {
         const inherited = result.communes.get("01|0101|010102");
         assert.equal(inherited.nameKh, "ឃុំខ");
         assert.equal(inherited.nameEn, "Commune B");
+    });
+
+    test("flat layout: a blank province on the first row is filled from the same district below", async () => {
+        const file = await writeWorkbook(
+            [
+                ["ខេត្ត/ក្រុង", "ខ័ណ្ឌ/ស្រុក", "ឃុំ/ភូមិ"],
+                [" ", "ខណ្ឌចំការមន", "សង្កាត់ទន្លេបាសាក់"],
+                ["ភ្នំពេញ", "ខណ្ឌចំការមន", "សង្កាត់ទួលទំពូងទី ២"]
+            ],
+            "first-row-blank"
+        );
+        const result = await parseWorkbook(file);
+        assert.deepEqual(result.invalid, []);
+        assert.equal(result.provinces.size, 1);
+        assert.equal(result.communes.size, 2);
+        assert.match(result.warnings[0].reason, /filled in as "ភ្នំពេញ" from row 3/);
+    });
+
+    test("flat layout: a blank province is not guessed when the district name exists in two provinces", async () => {
+        const file = await writeWorkbook(
+            [
+                ["ខេត្ត/ក្រុង", "ខ័ណ្ឌ/ស្រុក", "ឃុំ/ភូមិ"],
+                [null, "ស្រុកដូចគ្នា", "ឃុំក"],
+                ["ខេត្តក", "ស្រុកដូចគ្នា", "ឃុំខ"],
+                ["ខេត្តខ", "ស្រុកដូចគ្នា", "ឃុំគ"]
+            ],
+            "ambiguous"
+        );
+        const result = await parseWorkbook(file);
+        assert.equal(result.invalid.length, 1);
+        assert.match(result.invalid[0].reason, /Province missing/);
     });
 
     test("flat layout: a row without any parent to inherit is reported, not guessed", async () => {

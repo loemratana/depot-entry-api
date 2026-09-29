@@ -26,6 +26,7 @@
  *     rewrites the stored spelling of a name-matched location.
  */
 import ExcelJS from "exceljs";
+import { cleanText, nameKey } from "../../utils/names.js";
 import { Province } from "./province.model.js";
 import { District } from "./district.model.js";
 import { Commune } from "./commune.model.js";
@@ -35,22 +36,8 @@ const LATIN = /[A-Za-z]/;
 
 // ---------- Normalisation ----------
 
-export const cleanText = (value) =>
-    String(value ?? "")
-        .normalize("NFC")
-        .replace(/[​-‍⁠﻿]/g, "") // zero-width characters common in Khmer text
-        .replace(/\s+/g, " ")
-        .trim();
-
-/**
- * Comparison key for names: two names with the same key are the same place.
- * COENG DA (្ដ) and COENG TA (្ត) render identically in most fonts and are used interchangeably.
- */
-export const nameKey = (value) =>
-    cleanText(value)
-        .replace(/\s/g, "")
-        .replace(/្ដ/g, "្ត")
-        .toLowerCase();
+// Shared with Sale GB names; re-exported for existing importers of this module
+export { cleanText, nameKey };
 
 export const normalizeCode = (value) => {
     const text = cleanText(value).replace(/\s/g, "");
@@ -230,8 +217,31 @@ const createCollector = () => {
 
 // ---------- Layout parsers ----------
 
+/**
+ * District name key → the province written next to it elsewhere on the sheet.
+ * Only districts that appear under exactly one province are kept, so a blank
+ * province can be filled in without guessing.
+ */
+const provinceByDistrict = (sheet, headerRowNumber, layout) => {
+    const found = new Map();
+    for (let r = headerRowNumber + 1; r <= sheet.rowCount; r++) {
+        const row = sheet.getRow(r);
+        const province = readLevel(row, layout.province);
+        const district = readLevel(row, layout.district);
+        if (!hasValue(province) || !district.nameKh) continue;
+
+        const key = nameKey(district.nameKh);
+        const provinceKey = province.code || nameKey(province.nameKh || province.nameEn);
+        const seen = found.get(key);
+        if (!seen) found.set(key, { province, provinceKey, row: r });
+        else if (seen.provinceKey !== provinceKey) found.set(key, { ambiguous: true });
+    }
+    return found;
+};
+
 const parseFlatSheet = (sheet, headerRowNumber, layout, collector) => {
     const { stats, report, register, finalize, invalid, warnings } = collector;
+    const districtProvinces = provinceByDistrict(sheet, headerRowNumber, layout);
     let lastProvince = null;
     let lastDistrict = null;
 
@@ -262,8 +272,24 @@ const parseFlatSheet = (sheet, headerRowNumber, layout, collector) => {
             storedProvince = lastProvince;
             inherited = true;
         } else {
-            report(invalid, where.sheet, r, "Province missing and no previous province to inherit");
-            continue;
+            // Nothing above to inherit (e.g. the first data row): use the province this
+            // district has on other rows, but only when that is unambiguous
+            const match = district.nameKh ? districtProvinces.get(nameKey(district.nameKh)) : undefined;
+            if (!match || match.ambiguous) {
+                report(invalid, where.sheet, r, "Province missing and no previous province to inherit");
+                continue;
+            }
+            const entry = finalize({ ...match.province }, where, "Province");
+            if (!entry) continue;
+            storedProvince = register(collector.provinces, entry.code, { ...entry, key: entry.code }, where, "Province");
+            if (!storedProvince) continue;
+            inherited = true;
+            report(
+                warnings,
+                where.sheet,
+                r,
+                `Province was blank; filled in as "${storedProvince.nameKh}" from row ${match.row} (same district "${district.nameKh}")`
+            );
         }
 
         if (lastProvince !== storedProvince) lastDistrict = null; // never inherit a district across provinces

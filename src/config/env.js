@@ -42,6 +42,8 @@ const schema = z
         MAX_FILES_PER_SUBMISSION: int(10, { min: 1, max: 50 }),
         MAX_FILE_SIZE_MB: int(10, { min: 1, max: 100 }),
         ALLOWED_FILE_TYPES: z.string().default("image/jpeg,image/png,image/webp,application/pdf"),
+        // Total size of photos embedded in one Excel export (they are held in memory while it is built)
+        EXPORT_MAX_IMAGE_MB: int(200, { min: 1, max: 2000 }),
 
         PUBLIC_SUBMISSION_RATE_LIMIT_WINDOW_MINUTES: int(15, { min: 1 }),
         PUBLIC_SUBMISSION_RATE_LIMIT_MAX: int(20, { min: 1 }),
@@ -130,6 +132,10 @@ const config = Object.freeze({
         allowedMimeTypes: env.ALLOWED_FILE_TYPES.split(",")
             .map((type) => type.trim().toLowerCase())
             .filter(Boolean)
+    },
+
+    export: {
+        maxImageBytes: env.EXPORT_MAX_IMAGE_MB * 1024 * 1024
     },
 
     rateLimit: {

@@ -13,6 +13,7 @@ import path from "node:path";
 import { z } from "zod";
 import { connectDatabase, disconnectDatabase } from "../config/database.js";
 import { Sale } from "../modules/sale/sale.model.js";
+import { nameKey } from "../utils/names.js";
 import { personName, phone } from "../utils/validators.js";
 
 const DATA_DIR = path.resolve("data");
@@ -75,7 +76,7 @@ const run = async () => {
             updateOne: {
                 filter: { code },
                 update: {
-                    $set: fields,
+                    $set: { ...fields, nameKey: nameKey(fields.name) },
                     $setOnInsert: { code, isActive: isActive ?? true }
                 },
                 upsert: true
