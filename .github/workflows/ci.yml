@@ -152,6 +152,44 @@ jobs:
           fi
           echo "All deploy secrets are set."
 
+      # Host key fingerprints are public; the host itself is masked because it is a secret.
+      # Shows which fingerprint to put in VPS_HOST_KEY when the deploy reports a mismatch.
+      - name: Check VPS host key fingerprint
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          scan=$(ssh-keyscan -T 15 -p 2244 "$VPS_HOST" 2>/dev/null | ssh-keygen -lf - 2>/dev/null || true)
+          if [ -z "$scan" ]; then
+            echo "::warning::Could not read the VPS host keys on port 2244 (host unreachable or port closed)."
+            exit 0
+          fi
+          echo "Host key fingerprints the VPS presents:"
+          echo "$scan" | awk '{ print "  " $NF " " $2 }'
+
+          # The deploy step (drone-ssh, Go's SSH library) checks the host key it negotiates,
+          # preferring ECDSA, then RSA, then ED25519, so VPS_HOST_KEY must be that one
+          required=""
+          for type in ECDSA RSA ED25519; do
+            required=$(echo "$scan" | awk -v t="($type)" '$NF == t { print $2; exit }')
+            if [ -n "$required" ]; then required_type=$type; break; fi
+          done
+          echo "The deploy step verifies the ($required_type) key: $required"
+
+          # Compare without printing the secret; tolerate stray spaces/newlines in it
+          expected=$(printf '%s' "$VPS_HOST_KEY" | tr -d '[:space:]')
+          if [ "$expected" = "$required" ]; then
+            echo "VPS_HOST_KEY is correct."
+          else
+            other=$(echo "$scan" | awk -v fp="$expected" '$2 == fp { print $NF }')
+            if [ -n "$other" ]; then
+              echo "::error::VPS_HOST_KEY is the $other fingerprint, but the deploy verifies the ($required_type) key. Set VPS_HOST_KEY to: $required"
+            else
+              echo "::error::VPS_HOST_KEY matches none of the VPS host keys. Set VPS_HOST_KEY to: $required"
+            fi
+            exit 1
+          fi
+
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.2
         with:
