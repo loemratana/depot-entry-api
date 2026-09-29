@@ -21,7 +21,7 @@ COPY data ./data
 # Never run as root
 USER node
 
-EXPOSE 5000
+EXPOSE 5001
 
 # Healthy when the API answers /api/health (uses Node's built-in fetch; the image has no curl)
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \

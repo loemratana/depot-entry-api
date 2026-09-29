@@ -76,7 +76,7 @@ MinIO no longer publishes free images to Docker Hub or Quay, so Compose uses Cha
 2. **docker**: builds the production image and validates `docker-compose.prod.yml`.
 3. **deploy** (pushes to `main` only, after both pass): connects to the VPS over SSH, pulls `main`, runs `docker compose -f docker-compose.prod.yml up -d --build`, and fails if the API does not report healthy.
 
-Production runs the API and MinIO in Docker. **MongoDB is not in Docker**: the API uses the MongoDB already on the VPS through `MONGODB_URI` in the server's `.env`. The API container uses host networking, so `mongodb://...@127.0.0.1:27017/...` on the VPS works as-is. It listens on `PORT`; put Nginx (HTTPS) in front of it.
+Production runs **only the API** in Docker. **MongoDB and MinIO are not in Docker**: the API uses the MongoDB and MinIO already on the VPS through `MONGODB_URI` and `MINIO_*` in the server's `.env`. The API container uses host networking, so `mongodb://...@127.0.0.1:27017/...` on the VPS works as-is. For MinIO, see the `MINIO_ENDPOINT` note below. It listens on `PORT`; put Nginx (HTTPS) in front of it.
 
 ### One-time server setup
 
