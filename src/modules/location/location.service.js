@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 import config from "../../config/env.js";
 import { buildPagination, escapeRegex } from "../../utils/pagination.js";
 import ApiError from "../../utils/ApiError.js";
-import { nameKey, parseWorkbook, syncLocations } from "./location.import.js";
+import { cleanText, nameKey, parseWorkbook, syncLocations } from "./location.import.js";
 import { Submission } from "../submission/submission.model.js";
 import { Province } from "./province.model.js";
 import { District } from "./district.model.js";
@@ -40,28 +40,75 @@ export const listCommunes = async (districtId, provinceId) => {
  * Loads the selected locations and verifies the hierarchy.
  * Returns field-level errors instead of throwing so callers can combine them.
  */
-export const resolveLocationSelection = async ({ provinceId, districtId, communeId }) => {
-    const [province, district, commune] = await Promise.all([
-        Province.findById(provinceId).lean(),
-        District.findById(districtId).lean(),
-        Commune.findById(communeId).lean()
-    ]);
+const isDuplicateKey = (error) => error?.code === 11000;
 
+/**
+ * A district or commune typed on the outlet form. Returns the existing one with
+ * the same name (compared by name key, like the Excel import) under that parent,
+ * or adds it as active with the name key as its code. The unique (parent, code)
+ * index makes two first uses of the same new name at once safe.
+ */
+export const findOrCreateLocationByName = async (level, parentDoc, name) => {
+    const Model = level === "districts" ? District : Commune;
+    const parentField = level === "districts" ? "provinceId" : "districtId";
+    const scope = { [parentField]: parentDoc._id };
+    const key = nameKey(name);
+
+    const findExisting = async () =>
+        (await Model.find(scope).lean()).find((doc) => doc.code === key || nameKey(doc.nameKh) === key || nameKey(doc.nameEn ?? "") === key);
+
+    const existing = await findExisting();
+    if (existing) return { doc: existing, created: false };
+
+    const doc = { ...scope, nameKh: cleanText(name), nameEn: "", code: key, isActive: true };
+    if (level === "communes") doc.provinceId = parentDoc.provinceId;
+    try {
+        return { doc: (await Model.create(doc)).toObject(), created: true };
+    } catch (error) {
+        if (!isDuplicateKey(error)) throw error;
+        // Another request added the same name a moment ago
+        return { doc: await findExisting(), created: false };
+    }
+};
+
+/**
+ * Validates the chosen location hierarchy. District and commune may be picked
+ * by id or typed by name (districtName / communeName); a typed name is matched
+ * to an existing one or added, but only once everything above it is valid.
+ */
+export const resolveLocationSelection = async ({ provinceId, districtId, districtName, communeId, communeName }) => {
     const errors = [];
+    const province = await Province.findById(provinceId).lean();
+    const provinceOk = province?.isActive;
+
+    let district = null;
+    if (districtId) district = await District.findById(districtId).lean();
+    else if (districtName && provinceOk) district = (await findOrCreateLocationByName("districts", province, districtName)).doc;
+
+    const districtOk = district?.isActive && provinceOk && district.provinceId.equals(province._id);
+    let commune = null;
+    if (communeId) commune = await Commune.findById(communeId).lean();
+    else if (communeName && districtOk) commune = (await findOrCreateLocationByName("communes", district, communeName)).doc;
 
     if (!province) errors.push({ field: "provinceId", message: "Province not found" });
     else if (!province.isActive) errors.push({ field: "provinceId", message: "Province is not available" });
 
-    if (!district) errors.push({ field: "districtId", message: "District not found" });
-    else if (!district.isActive) errors.push({ field: "districtId", message: "District is not available" });
+    const districtField = districtId ? "districtId" : "districtName";
+    const communeField = communeId ? "communeId" : "communeName";
+
+    if (!district) {
+        // A typed district is only looked up once the province is valid
+        if (districtId || provinceOk) errors.push({ field: districtField, message: "District not found" });
+    } else if (!district.isActive) errors.push({ field: districtField, message: "District is not available" });
     else if (province && !district.provinceId.equals(province._id)) {
-        errors.push({ field: "districtId", message: "District does not belong to the selected province" });
+        errors.push({ field: districtField, message: "District does not belong to the selected province" });
     }
 
-    if (!commune) errors.push({ field: "communeId", message: "Commune not found" });
-    else if (!commune.isActive) errors.push({ field: "communeId", message: "Commune is not available" });
+    if (!commune) {
+        if (communeId || districtOk) errors.push({ field: communeField, message: "Commune not found" });
+    } else if (!commune.isActive) errors.push({ field: communeField, message: "Commune is not available" });
     else if (district && !commune.districtId.equals(district._id)) {
-        errors.push({ field: "communeId", message: "Commune does not belong to the selected district" });
+        errors.push({ field: communeField, message: "Commune does not belong to the selected district" });
     }
 
     return { province, district, commune, errors };

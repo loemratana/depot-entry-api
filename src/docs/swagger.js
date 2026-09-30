@@ -191,13 +191,26 @@ const swaggerSpec = {
                         "multipart/form-data": {
                             schema: {
                                 type: "object",
-                                required: ["clientName", "phone", "provinceId", "districtId", "communeId", "saleGbId", "files"],
+                                required: ["clientName", "phone", "provinceId", "files"],
                                 properties: {
                                     clientName: { type: "string", minLength: 2, example: "សុខា ចាន់", description: "ឈ្មោះ ម៉ូយ" },
                                     phone: { type: "string", example: "012 345 678", description: "9–10 digits starting with 0; spaces/dashes are ignored" },
                                     provinceId: { type: "string", example: PROVINCE.id },
-                                    districtId: { type: "string", example: DISTRICT.id },
-                                    communeId: { type: "string", example: COMMUNE.id },
+                                    districtId: { type: "string", example: DISTRICT.id, description: "Picked district. Send this or districtName" },
+                                    districtName: {
+                                        type: "string",
+                                        minLength: 2,
+                                        maxLength: 100,
+                                        description:
+                                            "District typed when it is not in the list. Matched to an existing district of the province by name (ignoring case and spacing), otherwise added"
+                                    },
+                                    communeId: { type: "string", example: COMMUNE.id, description: "Picked commune. Send this or communeName" },
+                                    communeName: {
+                                        type: "string",
+                                        minLength: 2,
+                                        maxLength: 100,
+                                        description: "Commune typed when it is not in the list; matched or added under the district, like districtName"
+                                    },
                                     saleGbId: { type: "string", example: SALE.id },
                                     files: { type: "array", items: { type: "string", format: "binary" } },
                                     sitePhotoMeta: {

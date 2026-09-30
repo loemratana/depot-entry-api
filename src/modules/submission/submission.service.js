@@ -71,8 +71,14 @@ export const completePendingStockReports = async ({ limit = 500 } = {}) => {
 const invalidReferences = (errors) => ApiError.validation(errors, "Invalid location or Sale GB selection");
 
 /** Validated location hierarchy as reference + name snapshot fields */
-const resolveLocationFields = async ({ provinceId, districtId, communeId }) => {
-    const { province, district, commune, errors } = await resolveLocationSelection({ provinceId, districtId, communeId });
+const resolveLocationFields = async ({ provinceId, districtId, districtName, communeId, communeName }) => {
+    const { province, district, commune, errors } = await resolveLocationSelection({
+        provinceId,
+        districtId,
+        districtName,
+        communeId,
+        communeName
+    });
     if (errors.length) throw invalidReferences(errors);
     return {
         provinceId: province._id,

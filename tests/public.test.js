@@ -289,3 +289,77 @@ describe("concurrency", () => {
         assert.equal(new Set(results.map((r) => r.body.data.submissionNo)).size, 25);
     });
 });
+
+describe("typed district and commune", () => {
+    const models = async () => ({
+        District: (await import("../src/modules/location/district.model.js")).District,
+        Commune: (await import("../src/modules/location/commune.model.js")).Commune
+    });
+    const typed = (overrides) =>
+        validFields(fx, { districtId: undefined, communeId: undefined, saleGbId: undefined, ...overrides });
+
+    test("a new district and commune are added and used by the submission", async () => {
+        const { District, Commune } = await models();
+        const res = await submit(typed({ districtName: "  ស្រុកថ្មី  ", communeName: "ឃុំថ្មី" }));
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+
+        const district = await District.findOne({ provinceId: fx.p1._id, nameKh: "ស្រុកថ្មី" }).lean();
+        const commune = await Commune.findOne({ districtId: district._id, nameKh: "ឃុំថ្មី" }).lean();
+        assert.ok(district.isActive && commune.isActive);
+        assert.ok(commune.provinceId.equals(fx.p1._id));
+
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        assert.ok(doc.districtId.equals(district._id));
+        assert.ok(doc.communeId.equals(commune._id));
+        assert.equal(doc.communeNameKh, "ឃុំថ្មី");
+
+        // Now listed for the next person
+        const listed = await api(`/public/locations/communes?districtId=${district._id}`);
+        assert.deepEqual(listed.body.data.map((c) => c.nameKh), ["ឃុំថ្មី"]);
+    });
+
+    test("a typed name matching an existing one (ignoring case/spaces) reuses it", async () => {
+        const { District, Commune } = await models();
+        const before = [await District.countDocuments(), await Commune.countDocuments()];
+        const res = await submit(
+            typed({ districtId: fx.d1._id, communeName: " test   COMMUNE one " })
+        );
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+        const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
+        assert.ok(doc.communeId.equals(fx.c1._id));
+        assert.deepEqual([await District.countDocuments(), await Commune.countDocuments()], before);
+    });
+
+    test("a typed name matching an inactive commune is refused", async () => {
+        const res = await submit(typed({ districtId: fx.d1._id, communeName: "ឃុំបិទ" }));
+        assert.equal(res.status, 400);
+        assert.equal(res.body.errors[0].field, "communeName");
+    });
+
+    test("concurrent first uses of the same new name add it once", async () => {
+        const { District } = await models();
+        const results = await Promise.all(
+            Array.from({ length: 5 }, () => submit(typed({ districtName: "ស្រុកប្រណាំង", communeName: "ឃុំប្រណាំង" })))
+        );
+        assert.ok(results.every((r) => r.status === 201), JSON.stringify(results.map((r) => r.body)));
+        assert.equal(await District.countDocuments({ provinceId: fx.p1._id, nameKh: "ស្រុកប្រណាំង" }), 1);
+    });
+
+    test("id and name together, neither, or a too-short name are rejected; nothing is added", async () => {
+        const { District } = await models();
+        const count = await District.countDocuments();
+        const both = await submit(typed({ districtId: fx.d1._id, districtName: "ស្រុកA", communeId: fx.c1._id }));
+        assert.equal(both.status, 400);
+        const neither = await submit(typed({ communeId: fx.c1._id }));
+        assert.equal(neither.status, 400);
+        assert.ok(neither.body.errors.some((e) => e.field === "districtId"));
+        const short = await submit(typed({ districtName: "x", communeName: "ឃុំ" }));
+        assert.equal(short.status, 400);
+        // A bad province adds nothing either
+        const badProvince = await submit(
+            typed({ provinceId: fx.cInactive._id, districtName: "ស្រុកមិនគួរមាន", communeName: "ឃុំមិនគួរមាន" })
+        );
+        assert.equal(badProvince.status, 400);
+        assert.equal(await District.countDocuments(), count);
+    });
+});

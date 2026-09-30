@@ -72,18 +72,51 @@ const saleGbFields = {
     saleGbName: z.preprocess(emptyToUndefined, saleGbName.optional())
 };
 
+// District / commune typed on the form when it is not in the list
+const typedLocationName = (label) =>
+    z.preprocess(
+        emptyToUndefined,
+        z
+            .string()
+            .trim()
+            .min(2, `${label} name must be at least 2 characters`)
+            .max(100, `${label} name must be at most 100 characters`)
+            .optional()
+    );
+
+/** Exactly one of <level>Id (picked) or <level>Name (typed) */
+const oneOf = (body, ctx, level, label) => {
+    const id = body[`${level}Id`];
+    const name = body[`${level}Name`];
+    if (id && name) {
+        ctx.addIssue({ code: "custom", path: [`${level}Name`], message: `Send either ${level}Id or ${level}Name, not both` });
+    } else if (!id && !name) {
+        ctx.addIssue({ code: "custom", path: [`${level}Id`], message: `${label} is required` });
+    }
+};
+
 export const createSubmissionSchema = {
     body: z
         .object({
             clientName: personName("Client name", { min: 2, max: 150 }),
             phone: phone(),
             provinceId: objectId("provinceId"),
-            districtId: objectId("districtId"),
-            communeId: objectId("communeId"),
+            districtId: z.preprocess(emptyToUndefined, objectId("districtId").optional()),
+            districtName: typedLocationName("District"),
+            communeId: z.preprocess(emptyToUndefined, objectId("communeId").optional()),
+            communeName: typedLocationName("Commune"),
             ...saleGbFields,
             stockItems,
             sitePhotoMeta
         })
+        .superRefine(
+            (body, ctx) => {
+                oneOf(body, ctx, "district", "District");
+                oneOf(body, ctx, "commune", "Commune");
+            },
+            // Also report a missing district/commune when other fields are invalid
+            { when: () => true }
+        )
 };
 
 const LOCATION_FIELDS = ["provinceId", "districtId", "communeId"];
