@@ -4,6 +4,8 @@ import jwt from "jsonwebtoken";
 import config from "../../config/env.js";
 import ApiError from "../../utils/ApiError.js";
 import { Admin, RefreshToken, RevokedToken } from "./auth.model.js";
+import { Role } from "../rbac/role.model.js";
+import { toAdminDto } from "../rbac/rbac.service.js";
 
 export const BCRYPT_ROUNDS = 12;
 
@@ -13,7 +15,9 @@ const DUMMY_HASH = bcrypt.hashSync("timing-safe-dummy-password", BCRYPT_ROUNDS);
 export const hashPassword = (password) => bcrypt.hash(password, BCRYPT_ROUNDS);
 
 const signToken = (admin) =>
-    jwt.sign({ role: admin.role }, config.jwtSecret, {
+    // Permissions are not put in the token: they are read on every request,
+    // so a role change applies immediately
+    jwt.sign({}, config.jwtSecret, {
         subject: admin._id.toString(),
         expiresIn: config.jwtExpiresIn,
         jwtid: crypto.randomUUID(),
@@ -43,7 +47,7 @@ const issueSession = async (admin, family) => {
         tokenType: "Bearer",
         expiresAt: new Date(exp * 1000).toISOString(),
         ...(await issueRefreshToken(admin._id, family)),
-        admin: admin.toJSON()
+        admin: toAdminDto(admin, await Role.findById(admin.roleId).lean())
     };
 };
 
@@ -106,7 +110,9 @@ export const verifyToken = async (token) => {
     if (revoked) throw ApiError.unauthorized("Session has been logged out");
     if (!admin || !admin.isActive) throw ApiError.unauthorized("Account is not active");
 
-    return { admin, payload };
+    // Read on every request so a role or permission change applies at once
+    const role = admin.roleId ? await Role.findById(admin.roleId).lean() : null;
+    return { admin, role, payload };
 };
 
 export const logout = async ({ admin, payload, refreshToken }) => {

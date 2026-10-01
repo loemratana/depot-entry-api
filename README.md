@@ -114,7 +114,7 @@ npm run seed:admin                     # create if missing; never duplicates
 npm run seed:admin -- --reset-password # also reset the password to ADMIN_PASSWORD
 ```
 
-Safe to run repeatedly. In production it refuses the example `change_me` password.
+Safe to run repeatedly. In production it refuses the example `change_me` password. The seeded admin is a **Super Admin**; add everyone else from the admin's Users page.
 
 ### Sale GB
 
@@ -222,6 +222,17 @@ Full interactive documentation with example values is at `/api/docs`. Responses 
 ### Authentication
 
 `POST /api/admin/auth/login` with `{ "email", "password" }` returns a JWT access token (HS256, `JWT_EXPIRES_IN`, default 14 days) and a refresh token (`REFRESH_TOKEN_EXPIRES_DAYS`, default 30 days). Send the access token as `Authorization: Bearer <token>`. `POST /api/admin/auth/refresh` with `{ "refreshToken" }` returns a new access token and a new refresh token; the old refresh token stops working, and reusing a used one ends that whole session. Refresh tokens are stored only as SHA-256 hashes. Passwords are hashed with bcrypt (12 rounds) and never returned. Logout revokes that access token (its ID is stored in `revokedtokens` until it would have expired anyway) and, when `{ "refreshToken" }` is sent, its refresh session. Every request re-checks that the admin still exists and is active.
+
+### Roles and permissions
+
+Every `/api/admin/*` endpoint (except login, refresh, `/me` and logout) requires a permission; without it the API returns `403`. The list of permissions is in [src/modules/rbac/permissions.js](src/modules/rbac/permissions.js) (e.g. `outlets.view`, `outlets.delete`, `stock.export`, `users.manage`).
+
+- Each user has one **role**; a role is a set of permissions, managed under `/api/admin/roles` (Roles page).
+- Built-in roles are created on first start and never overwritten afterwards: **Super Admin** (every permission, cannot be edited or deleted), **Manager** (all but users and roles), **Staff** (view and record; no delete, export or import) and **Viewer** (read-only).
+- Accounts from before roles existed are given Super Admin at startup, so nobody is locked out by the upgrade.
+- Permissions are read on every request, so changing a role or a user's role applies immediately; deactivating a user or resetting their password also ends their refresh sessions.
+- Safety rules: only a Super Admin can create, edit or promote Super Admins; you cannot change your own role or deactivate yourself; the last active Super Admin cannot be demoted or deactivated; a role still assigned to users cannot be deleted.
+- `/me` and login return the user's `role` and `permissions`, which the admin UI uses to hide pages and buttons. The API enforces the rules either way.
 
 ### Filtering and pagination
 

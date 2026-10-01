@@ -34,8 +34,10 @@ const { District } = await import("../src/modules/location/district.model.js");
 const { Commune } = await import("../src/modules/location/commune.model.js");
 const { Sale } = await import("../src/modules/sale/sale.model.js");
 const { Submission } = await import("../src/modules/submission/submission.model.js");
+const { Role } = await import("../src/modules/rbac/role.model.js");
+const { ensureRbac, getSuperAdminRole } = await import("../src/modules/rbac/rbac.service.js");
 
-export { mongoose, minioClient, BUCKET, Admin, Province, District, Commune, Sale, Submission };
+export { mongoose, minioClient, BUCKET, Admin, Role, Province, District, Commune, Sale, Submission };
 
 export const ADMIN = { email: process.env.ADMIN_EMAIL, password: process.env.ADMIN_PASSWORD };
 
@@ -89,8 +91,31 @@ export const api = async (path, { method = "GET", token, json, form, headers = {
 
 // ---------- Fixtures ----------
 
-export const createAdmin = async () =>
-    Admin.create({ name: "Test Admin", email: ADMIN.email, passwordHash: await hashPassword(ADMIN.password) });
+/** The main test admin: Super Admin, like the seeded admin */
+export const createAdmin = async () => {
+    await ensureRbac();
+    const superAdmin = await getSuperAdminRole();
+    return Admin.create({
+        name: "Test Admin",
+        email: ADMIN.email,
+        passwordHash: await hashPassword(ADMIN.password),
+        roleId: superAdmin._id
+    });
+};
+
+let userCounter = 0;
+
+/** A user with a custom role holding exactly these permissions; returns { user, role, token, email, password } */
+export const createUserWithPermissions = async (permissions) => {
+    await ensureRbac();
+    userCounter += 1;
+    const role = await Role.create({ name: `Test role ${userCounter}`, permissions });
+    const email = `user-${userCounter}@example.com`;
+    const password = "user-password-123";
+    const user = await Admin.create({ name: `Test User ${userCounter}`, email, passwordHash: await hashPassword(password), roleId: role._id });
+    const { body } = await api("/admin/auth/login", { method: "POST", json: { email, password } });
+    return { user, role, token: body.data.token, email, password };
+};
 
 export const login = async () => {
     const { body } = await api("/admin/auth/login", { method: "POST", json: ADMIN });

@@ -1,13 +1,13 @@
 import mongoose from "mongoose";
 
-export const ADMIN_ROLES = Object.freeze(["ADMIN"]);
-
 const adminSchema = new mongoose.Schema(
     {
         name: { type: String, required: true, trim: true },
         email: { type: String, required: true, trim: true, lowercase: true },
         passwordHash: { type: String, required: true, select: false },
-        role: { type: String, enum: ADMIN_ROLES, default: "ADMIN" },
+        // What this user may do (see modules/rbac). Older accounts without one are
+        // given Super Admin at startup, so nobody is locked out by the upgrade
+        roleId: { type: mongoose.Schema.Types.ObjectId, ref: "Role", default: null },
         isActive: { type: Boolean, default: true },
         lastLoginAt: { type: Date, default: null }
     },
@@ -16,6 +16,8 @@ const adminSchema = new mongoose.Schema(
 
 // Login looks up by email; also prevents duplicate admins
 adminSchema.index({ email: 1 }, { unique: true });
+// Counting users per role, and active Super Admins
+adminSchema.index({ roleId: 1, isActive: 1 });
 
 adminSchema.set("toJSON", {
     transform: (doc, ret) => {
@@ -23,6 +25,7 @@ adminSchema.set("toJSON", {
         delete ret._id;
         delete ret.__v;
         delete ret.passwordHash;
+        delete ret.role; // legacy field, removed by the RBAC migration
         return ret;
     }
 });

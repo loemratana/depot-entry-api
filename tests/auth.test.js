@@ -19,7 +19,8 @@ describe("admin authentication", () => {
         assert.equal(res.body.success, true);
         assert.ok(res.body.data.token);
         assert.equal(res.body.data.admin.email, ADMIN.email);
-        assert.equal(res.body.data.admin.role, "ADMIN");
+        assert.equal(res.body.data.admin.role.name, "Super Admin");
+        assert.ok(res.body.data.admin.permissions.includes("users.manage"));
         assert.equal(JSON.stringify(res.body).includes("passwordHash"), false);
         assert.equal(JSON.stringify(res.body).includes(ADMIN.password), false);
 

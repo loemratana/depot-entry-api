@@ -1,5 +1,6 @@
 import { Router } from "express";
 import validate from "../../middleware/validate.middleware.js";
+import { requirePermission } from "../../middleware/auth.middleware.js";
 import { uploadBrandLogo } from "../../middleware/upload.middleware.js";
 import {
     exportStockReportsSchema,
@@ -26,22 +27,24 @@ publicStockRoutes.get("/brands/:id/logo", validate(brandIdSchema), catalogContro
 
 // /api/admin/stock
 export const adminStockRoutes = Router();
-adminStockRoutes.get("/reports", validate(listStockReportsSchema), stockController.listReports);
+const canViewStock = requirePermission("stock.view");
+adminStockRoutes.get("/reports", canViewStock, validate(listStockReportsSchema), stockController.listReports);
 // Registered before /reports/:id so "export" is not parsed as an id
-adminStockRoutes.get("/reports/export", validate(exportStockReportsSchema), stockController.exportReports);
-adminStockRoutes.get("/reports/:id", validate(stockReportIdSchema), stockController.getReport);
-adminStockRoutes.delete("/reports/:id", validate(stockReportIdSchema), stockController.deleteReport);
+adminStockRoutes.get("/reports/export", requirePermission("stock.export"), validate(exportStockReportsSchema), stockController.exportReports);
+adminStockRoutes.get("/reports/:id", canViewStock, validate(stockReportIdSchema), stockController.getReport);
+adminStockRoutes.delete("/reports/:id", requirePermission("stock.delete"), validate(stockReportIdSchema), stockController.deleteReport);
 
 // Brands & products shown on the stock form
-adminStockRoutes.get("/brands", catalogController.listBrands);
-adminStockRoutes.post("/brands", validate(createBrandSchema), catalogController.createBrand);
-adminStockRoutes.patch("/brands/:id", validate(updateBrandSchema), catalogController.updateBrand);
-adminStockRoutes.delete("/brands/:id", validate(brandIdSchema), catalogController.deleteBrand);
-adminStockRoutes.post("/brands/:id/move", validate(moveBrandSchema), catalogController.moveBrand);
+const canManageCatalog = requirePermission("catalog.manage");
+adminStockRoutes.get("/brands", requirePermission("catalog.view", "catalog.manage"), catalogController.listBrands);
+adminStockRoutes.post("/brands", canManageCatalog, validate(createBrandSchema), catalogController.createBrand);
+adminStockRoutes.patch("/brands/:id", canManageCatalog, validate(updateBrandSchema), catalogController.updateBrand);
+adminStockRoutes.delete("/brands/:id", canManageCatalog, validate(brandIdSchema), catalogController.deleteBrand);
+adminStockRoutes.post("/brands/:id/move", canManageCatalog, validate(moveBrandSchema), catalogController.moveBrand);
 // The id is validated before the image is received
-adminStockRoutes.put("/brands/:id/logo", validate(brandIdSchema), uploadBrandLogo, catalogController.uploadLogo);
-adminStockRoutes.delete("/brands/:id/logo", validate(brandIdSchema), catalogController.removeLogo);
-adminStockRoutes.post("/brands/:id/products", validate(createProductSchema), catalogController.createProduct);
-adminStockRoutes.patch("/products/:id", validate(updateProductSchema), catalogController.updateProduct);
-adminStockRoutes.delete("/products/:id", validate(productIdSchema), catalogController.deleteProduct);
-adminStockRoutes.post("/products/:id/move", validate(moveProductSchema), catalogController.moveProduct);
+adminStockRoutes.put("/brands/:id/logo", canManageCatalog, validate(brandIdSchema), uploadBrandLogo, catalogController.uploadLogo);
+adminStockRoutes.delete("/brands/:id/logo", canManageCatalog, validate(brandIdSchema), catalogController.removeLogo);
+adminStockRoutes.post("/brands/:id/products", canManageCatalog, validate(createProductSchema), catalogController.createProduct);
+adminStockRoutes.patch("/products/:id", canManageCatalog, validate(updateProductSchema), catalogController.updateProduct);
+adminStockRoutes.delete("/products/:id", canManageCatalog, validate(productIdSchema), catalogController.deleteProduct);
+adminStockRoutes.post("/products/:id/move", canManageCatalog, validate(moveProductSchema), catalogController.moveProduct);

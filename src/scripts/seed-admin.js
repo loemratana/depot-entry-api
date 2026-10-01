@@ -10,6 +10,7 @@ import config from "../config/env.js";
 import { connectDatabase, disconnectDatabase } from "../config/database.js";
 import { Admin } from "../modules/auth/auth.model.js";
 import { hashPassword } from "../modules/auth/auth.service.js";
+import { ensureRbac, getSuperAdminRole } from "../modules/rbac/rbac.service.js";
 
 const resetPassword = process.argv.includes("--reset-password");
 
@@ -30,11 +31,13 @@ const run = async () => {
 
     await connectDatabase();
     await Admin.init(); // make sure the unique email index exists before upserting
+    await ensureRbac();
+    const superAdmin = await getSuperAdminRole();
 
     const passwordHash = await hashPassword(password);
 
     // Atomic upsert: concurrent runs cannot create duplicates
-    const onInsert = { name, email: normalizedEmail, role: "ADMIN", isActive: true };
+    const onInsert = { name, email: normalizedEmail, roleId: superAdmin._id, isActive: true };
     const update = resetPassword
         ? { $setOnInsert: onInsert, $set: { passwordHash } }
         : { $setOnInsert: { ...onInsert, passwordHash } };

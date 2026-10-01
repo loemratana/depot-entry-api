@@ -1,5 +1,6 @@
 import { Router } from "express";
 import validate from "../../middleware/validate.middleware.js";
+import { requirePermission } from "../../middleware/auth.middleware.js";
 import { submissionLimiter } from "../../middleware/rateLimit.middleware.js";
 import { uploadSubmissionFiles, uploadSubmissionWithSitePhotos } from "../../middleware/upload.middleware.js";
 import {
@@ -22,18 +23,31 @@ publicSubmissionRoutes.post(
 );
 
 export const adminSubmissionRoutes = Router();
-adminSubmissionRoutes.get("/", validate(listSubmissionsSchema), submissionController.listSubmissions);
-adminSubmissionRoutes.post("/", uploadSubmissionFiles, validate(createSubmissionSchema), submissionController.adminCreateSubmission);
+// Permissions are checked before any file is received
+adminSubmissionRoutes.get("/", requirePermission("outlets.view"), validate(listSubmissionsSchema), submissionController.listSubmissions);
+adminSubmissionRoutes.post(
+    "/",
+    requirePermission("outlets.create"),
+    uploadSubmissionFiles,
+    validate(createSubmissionSchema),
+    submissionController.adminCreateSubmission
+);
 // Registered before /:id so "export" is not parsed as an id
-adminSubmissionRoutes.use("/export", exportRoutes);
-adminSubmissionRoutes.get("/:id", validate(submissionIdSchema), submissionController.getSubmission);
-adminSubmissionRoutes.patch("/:id", validate(updateSubmissionSchema), submissionController.updateSubmission);
-adminSubmissionRoutes.delete("/:id", validate(submissionIdSchema), submissionController.deleteSubmission);
+adminSubmissionRoutes.use("/export", requirePermission("outlets.export"), exportRoutes);
+adminSubmissionRoutes.get("/:id", requirePermission("outlets.view"), validate(submissionIdSchema), submissionController.getSubmission);
+adminSubmissionRoutes.patch("/:id", requirePermission("outlets.update"), validate(updateSubmissionSchema), submissionController.updateSubmission);
+adminSubmissionRoutes.delete("/:id", requirePermission("outlets.delete"), validate(submissionIdSchema), submissionController.deleteSubmission);
 // The id is validated before files are received, so a bad id never uploads anything
 adminSubmissionRoutes.post(
     "/:id/files",
+    requirePermission("outlets.files"),
     validate(submissionIdSchema),
     uploadSubmissionFiles,
     submissionController.addFiles
 );
-adminSubmissionRoutes.delete("/:id/files/:fileId", validate(submissionFileSchema), submissionController.removeFile);
+adminSubmissionRoutes.delete(
+    "/:id/files/:fileId",
+    requirePermission("outlets.files"),
+    validate(submissionFileSchema),
+    submissionController.removeFile
+);

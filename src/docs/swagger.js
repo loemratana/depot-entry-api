@@ -94,6 +94,7 @@ const swaggerSpec = {
         { name: "Public – Sales" },
         { name: "Public – Submissions" },
         { name: "Admin – Auth" },
+        { name: "Admin – Users & Roles", description: "Every admin endpoint needs a permission; a missing one returns 403" },
         { name: "Admin – Submissions" },
         { name: "Admin – Sales" }
     ],
@@ -371,7 +372,8 @@ const swaggerSpec = {
                                         id: ID,
                                         name: "Administrator",
                                         email: "admin@example.com",
-                                        role: "ADMIN",
+                                        role: { id: ID, name: "Super Admin", isSystem: true },
+                                        permissions: ["outlets.view", "outlets.create", "…"],
                                         isActive: true,
                                         lastLoginAt: "2026-09-28T10:00:00.000Z",
                                         createdAt: "2026-09-01T08:00:00.000Z",
@@ -440,6 +442,122 @@ const swaggerSpec = {
                     200: { description: "Logged out", content: json(ref("MessageResponse"), { success: true, message: "Logged out successfully" }) },
                     401: response("Unauthorized")
                 }
+            }
+        },
+
+        "/admin/users": {
+            get: {
+                tags: ["Admin – Users & Roles"],
+                summary: "List users (users.view)",
+                security: [{ bearerAuth: [] }],
+                responses: { 200: { description: "Users with their role", content: json(success({ type: "array", items: ref("Admin") })) }, 403: response("Forbidden") }
+            },
+            post: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Create a user (users.manage)",
+                description: "Only a Super Admin may create another Super Admin.",
+                security: [{ bearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: json(
+                        {
+                            type: "object",
+                            required: ["name", "email", "password", "roleId"],
+                            properties: {
+                                name: { type: "string" },
+                                email: { type: "string", format: "email" },
+                                password: { type: "string", minLength: 8 },
+                                roleId: { type: "string" },
+                                isActive: { type: "boolean" }
+                            }
+                        },
+                        { name: "Dara", email: "dara@example.com", password: "a-long-password", roleId: ID }
+                    )
+                },
+                responses: { 201: { description: "Created" }, 400: response("ValidationError"), 403: response("Forbidden"), 409: { description: "Email already used" } }
+            }
+        },
+        "/admin/users/{id}": {
+            patch: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Edit a user: name, email, role, active (users.manage)",
+                description:
+                    "You cannot change your own role or deactivate yourself. Only a Super Admin may edit or promote Super Admins. " +
+                    "The last active Super Admin cannot be demoted or deactivated (409). Deactivating ends the user's sessions.",
+                security: [{ bearerAuth: [] }],
+                parameters: [idParam("User id")],
+                requestBody: {
+                    required: true,
+                    content: json({
+                        type: "object",
+                        properties: { name: { type: "string" }, email: { type: "string" }, roleId: { type: "string" }, isActive: { type: "boolean" } }
+                    })
+                },
+                responses: { 200: { description: "Updated" }, 400: response("ValidationError"), 403: response("Forbidden"), 404: response("NotFound"), 409: { description: "Last Super Admin or email used" } }
+            }
+        },
+        "/admin/users/{id}/password": {
+            post: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Reset a user's password (users.manage)",
+                description: "The user's signed-in devices must log in again.",
+                security: [{ bearerAuth: [] }],
+                parameters: [idParam("User id")],
+                requestBody: { required: true, content: json({ type: "object", required: ["password"], properties: { password: { type: "string", minLength: 8 } } }) },
+                responses: { 200: { description: "Password reset" }, 403: response("Forbidden"), 404: response("NotFound") }
+            }
+        },
+        "/admin/roles": {
+            get: {
+                tags: ["Admin – Users & Roles"],
+                summary: "List roles with their permissions and user counts (roles.manage or users.view)",
+                security: [{ bearerAuth: [] }],
+                responses: { 200: { description: "Roles" }, 403: response("Forbidden") }
+            },
+            post: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Create a role (roles.manage)",
+                security: [{ bearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: json(
+                        {
+                            type: "object",
+                            required: ["name", "permissions"],
+                            properties: { name: { type: "string" }, description: { type: "string" }, permissions: { type: "array", items: { type: "string" } } }
+                        },
+                        { name: "Sale", description: "Field sales", permissions: ["outlets.view", "outlets.create"] }
+                    )
+                },
+                responses: { 201: { description: "Created" }, 400: response("ValidationError"), 403: response("Forbidden"), 409: { description: "Name already used" } }
+            }
+        },
+        "/admin/roles/permissions": {
+            get: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Every permission, grouped, with labels (roles.manage)",
+                security: [{ bearerAuth: [] }],
+                responses: { 200: { description: "Permission groups" }, 403: response("Forbidden") }
+            }
+        },
+        "/admin/roles/{id}": {
+            patch: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Edit a role (roles.manage); the Super Admin role cannot be changed",
+                security: [{ bearerAuth: [] }],
+                parameters: [idParam("Role id")],
+                requestBody: {
+                    required: true,
+                    content: json({ type: "object", properties: { name: { type: "string" }, description: { type: "string" }, permissions: { type: "array", items: { type: "string" } } } })
+                },
+                responses: { 200: { description: "Updated" }, 403: response("Forbidden"), 404: response("NotFound"), 409: { description: "Name already used" } }
+            },
+            delete: {
+                tags: ["Admin – Users & Roles"],
+                summary: "Delete a role (roles.manage); only when no user has it",
+                security: [{ bearerAuth: [] }],
+                parameters: [idParam("Role id")],
+                responses: { 200: { description: "Deleted" }, 403: response("Forbidden"), 404: response("NotFound"), 409: { description: "Role still assigned" } }
             }
         },
 
@@ -647,7 +765,16 @@ const swaggerSpec = {
                     id: { type: "string" },
                     name: { type: "string" },
                     email: { type: "string" },
-                    role: { type: "string", enum: ["ADMIN"] },
+                    role: {
+                        type: "object",
+                        nullable: true,
+                        properties: { id: { type: "string" }, name: { type: "string" }, isSystem: { type: "boolean" } }
+                    },
+                    permissions: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "What this user may do, e.g. outlets.view. Returned by login and /me"
+                    },
                     isActive: { type: "boolean" },
                     lastLoginAt: { type: "string", format: "date-time", nullable: true },
                     createdAt: { type: "string", format: "date-time" },
@@ -741,6 +868,10 @@ const swaggerSpec = {
             Unauthorized: {
                 description: "Missing, invalid, expired or logged-out token",
                 content: json(ref("ErrorResponse"), { success: false, message: "Authentication required" })
+            },
+            Forbidden: {
+                description: "Signed in, but the user's role lacks the permission this endpoint needs",
+                content: json(ref("ErrorResponse"), { success: false, message: "You do not have permission to perform this action" })
             },
             NotFound: {
                 description: "Not found",
