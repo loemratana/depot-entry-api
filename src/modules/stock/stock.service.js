@@ -4,6 +4,16 @@ import config from "../../config/env.js";
 import ApiError from "../../utils/ApiError.js";
 import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import { buildPagination, escapeRegex, getPagination } from "../../utils/pagination.js";
+import {
+    DOWNLOAD_CONCURRENCY,
+    EMBEDDABLE,
+    PHOTO_COLUMN_WIDTH,
+    ROW_HEIGHT_POINTS,
+    addThumbnail,
+    downloadObject,
+    mapWithLimit
+} from "../../utils/excel-images.js";
+import { Submission } from "../submission/submission.model.js";
 import { Brand } from "./brand.model.js";
 import { logoPath } from "./catalog.service.js";
 import { Product } from "./product.model.js";
@@ -147,11 +157,22 @@ export const stockExportFileName = () => `stock-reports-${businessDate()}.xlsx`;
 const bilingual = (nameKh, nameEn) => (nameEn && nameEn !== nameKh ? `${nameKh} (${nameEn})` : nameKh);
 
 /**
- * One row per report, one column per product and the quantities its brand counts.
- * Product columns follow the current catalog order; products only found in older
- * reports are appended.
+ * The outlet's picture for the export: its first site photo (taken with GPS on
+ * the form), otherwise its first JPEG/PNG file; null when it has none.
  */
-export const streamStockExport = async (query, outputStream) => {
+const pickPicture = (files = []) => {
+    const embeddable = files.filter((file) => EMBEDDABLE[file.mimeType]);
+    return embeddable.find((file) => file.photoId) ?? embeddable[0] ?? null;
+};
+
+/**
+ * One row per report: No., outlet and location, one column per product and the
+ * quantities its brand counts, and the outlet's picture in the last column. Product columns
+ * follow the current catalog order; products only found in older reports are
+ * appended. Pictures are held in memory until the file is written, so their
+ * total size is capped (EXPORT_MAX_IMAGE_MB); past the cap the cell says so.
+ */
+export const buildStockExport = async (query) => {
     const catalog = await listActiveCatalog();
     const productColumns = catalog.flatMap((brand) =>
         brand.products.map((product) => ({
@@ -176,11 +197,47 @@ export const streamStockExport = async (query, outputStream) => {
         }
     }
 
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: outputStream, useStyles: true });
+    // One picture per outlet, planned within the memory budget before downloading
+    const outletIds = [...new Set(docs.map((doc) => doc.outletId.toString()))];
+    const outlets = await Submission.find(
+        { _id: { $in: outletIds } },
+        { "files.objectKey": 1, "files.mimeType": 1, "files.size": 1, "files.photoId": 1, "files.originalName": 1 }
+    )
+        .maxTimeMS(config.exportQueryTimeoutMs)
+        .lean();
+    const pictureOf = new Map(outlets.map((outlet) => [outlet._id.toString(), pickPicture(outlet.files)]));
+
+    const budget = config.export.maxImageBytes;
+    let planned = 0;
+    let budgetReached = false;
+    const toEmbed = new Map(); // outletId → its picture (downloaded once per outlet)
+    for (const id of outletIds) {
+        const file = pictureOf.get(id);
+        if (!file) continue;
+        if (planned + file.size > budget) {
+            budgetReached = true;
+            continue;
+        }
+        planned += file.size;
+        toEmbed.set(id, file);
+    }
+    const toDownload = [...toEmbed.entries()];
+    const buffers = await mapWithLimit(toDownload, DOWNLOAD_CONCURRENCY, async ([, file]) => {
+        try {
+            return await downloadObject(file.objectKey);
+        } catch {
+            return null;
+        }
+    });
+    const pictureBuffer = new Map(toDownload.map(([id], index) => [id, buffers[index]]));
+
+    const workbook = new ExcelJS.Workbook();
     workbook.creator = "Outlet Management";
+    workbook.created = new Date();
     const sheet = workbook.addWorksheet("Stock Reports", { views: [{ state: "frozen", ySplit: 1 }] });
 
     sheet.columns = [
+        { header: "No.", key: "no", width: 6 },
         { header: "Outlet", key: "outlet", width: 28 },
         { header: "Province", key: "province", width: 26 },
         { header: "District", key: "district", width: 26 },
@@ -192,15 +249,19 @@ export const streamStockExport = async (query, outputStream) => {
                 key: `${product.id}:${measure.key}`,
                 width: 18
             }))
-        )
+        ),
+        { header: "Picture", key: "picture", width: PHOTO_COLUMN_WIDTH }
     ];
-    sheet.getRow(1).font = { bold: true };
-    sheet.getRow(1).alignment = { wrapText: true, vertical: "middle" };
-    sheet.getRow(1).height = 45;
-    sheet.getRow(1).commit();
+    const header = sheet.getRow(1);
+    header.font = { bold: true };
+    header.alignment = { wrapText: true, vertical: "middle" };
+    header.height = 45;
+    const PICTURE_COLUMN = sheet.columns.length - 1; // last column, zero-based for image anchors
 
-    for (const doc of docs) {
-        const row = {
+    docs.forEach((doc, index) => {
+        const outletId = doc.outletId.toString();
+        const values = {
+            no: index + 1,
             outlet: doc.outletName,
             province: bilingual(doc.provinceNameKh, doc.provinceNameEn),
             district: bilingual(doc.districtNameKh, doc.districtNameEn),
@@ -209,12 +270,36 @@ export const streamStockExport = async (query, outputStream) => {
             reportedAt: toBusinessWallTime(doc.reportedAt)
         };
         for (const item of doc.items) {
-            for (const key of MEASURE_KEYS) row[`${item.productId}:${key}`] = item[key] ?? 0;
+            for (const key of MEASURE_KEYS) values[`${item.productId}:${key}`] = item[key] ?? 0;
         }
-        sheet.addRow(row).commit();
+        const row = sheet.addRow(values);
+        row.alignment = { vertical: "middle", wrapText: true };
+        row.getCell("no").alignment = { vertical: "middle", horizontal: "center" };
+
+        const file = toEmbed.get(outletId);
+        const buffer = pictureBuffer.get(outletId);
+        if (file && buffer) {
+            addThumbnail(workbook, sheet, { buffer, mimeType: file.mimeType, col: PICTURE_COLUMN, rowNumber: row.number });
+            row.height = ROW_HEIGHT_POINTS;
+        } else if (file) {
+            row.getCell("picture").value = "(unavailable)";
+        } else if (pictureOf.get(outletId)) {
+            row.getCell("picture").value = "(not shown: size limit)";
+        } else {
+            row.getCell("picture").value = "No picture";
+        }
+    });
+
+    sheet.autoFilter = { from: "A1", to: { row: 1, column: sheet.columns.length } };
+
+    if (budgetReached) {
+        const note = workbook.addWorksheet("Notes");
+        note.getColumn(1).width = 100;
+        note.addRow([
+            `Some pictures are not shown because this export reached the ${Math.round(budget / 1024 / 1024)} MB ` +
+                "image limit. Narrow the filters to export fewer reports."
+        ]);
     }
 
-    sheet.commit();
-    await workbook.commit();
-    return docs.length;
+    return { workbook, rowCount: docs.length };
 };

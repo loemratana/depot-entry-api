@@ -304,3 +304,22 @@ describe("GET /api/admin/map/submissions", () => {
         assert.equal((await getMap("?dateFrom=2026-02-01&dateTo=2026-01-01")).status, 400);
     });
 });
+
+describe("admin Add outlet uses the same form as the public one", () => {
+    test("an admin can add an outlet with a GPS site photo; it is recorded as added by the admin", async () => {
+        const photoId = newPhotoId();
+        const form = submissionForm(
+            validFields(fx, { saleGbId: undefined, clientName: "Admin Photo Outlet", sitePhotoMeta: JSON.stringify([gps(photoId)]) }),
+            []
+        );
+        form.append(`sitePhotos[${photoId}]`, FILES.jpg(), "shop.jpg");
+        const res = await api("/admin/submissions", { method: "POST", token, form });
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+
+        const doc = await findBySubmissionNo(res.body.data.submissionNo);
+        assert.equal(doc.files.length, 1);
+        assert.equal(doc.files[0].photoId, photoId);
+        assert.deepEqual(doc.files[0].location.coordinates, [104.9282, 11.5564]);
+        assert.ok(doc.files[0].uploadedBy, "file records the admin who added it");
+    });
+});

@@ -25,10 +25,11 @@ publicSubmissionRoutes.post(
 export const adminSubmissionRoutes = Router();
 // Permissions are checked before any file is received
 adminSubmissionRoutes.get("/", requirePermission("outlets.view"), validate(listSubmissionsSchema), submissionController.listSubmissions);
+// Same form as the public one: files, GPS site photos and stock
 adminSubmissionRoutes.post(
     "/",
     requirePermission("outlets.create"),
-    uploadSubmissionFiles,
+    uploadSubmissionWithSitePhotos,
     validate(createSubmissionSchema),
     submissionController.adminCreateSubmission
 );

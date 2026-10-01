@@ -2,6 +2,7 @@ import asyncHandler from "../../utils/asyncHandler.js";
 import { sendSuccess } from "../../utils/response.js";
 import { STOCK_MEASURES } from "./stock.constants.js";
 import * as stockService from "./stock.service.js";
+import { exportLimiter } from "../export/export.controller.js";
 
 // ---------- Public ----------
 
@@ -27,13 +28,18 @@ export const deleteReport = asyncHandler(async (req, res) => {
     sendSuccess(res, { message: "Stock report deleted" });
 });
 
+// Pictures are held in memory, so stock exports share the outlet export queue
 export const exportReports = asyncHandler(async (req, res) => {
-    res.status(200);
-    res.set({
-        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="${stockService.stockExportFileName()}"`,
-        "Cache-Control": "no-store"
+    await exportLimiter.run(async () => {
+        // Built before any headers are sent, so a failure still returns a normal JSON error
+        const { workbook } = await stockService.buildStockExport(req.validated.query);
+        res.status(200);
+        res.set({
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "Content-Disposition": `attachment; filename="${stockService.stockExportFileName()}"`,
+            "Cache-Control": "no-store"
+        });
+        await workbook.xlsx.write(res);
+        res.end();
     });
-    // Once streaming starts, errors abort the connection (see error middleware)
-    await stockService.streamStockExport(req.validated.query, res);
 });

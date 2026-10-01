@@ -58,6 +58,7 @@ export const adminCreateSubmission = asyncHandler(async (req, res) => {
     const { submissionNo, replayed } = await submissionService.createSubmission({
         input: req.validated.body,
         files: req.files,
+        sitePhotos: req.sitePhotos,
         uploadedBy: req.admin._id,
         idempotencyKey
     });

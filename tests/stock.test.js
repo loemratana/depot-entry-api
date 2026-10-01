@@ -2,6 +2,7 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import {
+    FILES,
 
     Submission,
     api,
@@ -19,6 +20,7 @@ import {
 const { Brand } = await import("../src/modules/stock/brand.model.js");
 const { Product } = await import("../src/modules/stock/product.model.js");
 const { StockReport } = await import("../src/modules/stock/stockReport.model.js");
+const { default: config } = await import("../src/config/env.js");
 
 let fx;
 let token;
@@ -226,7 +228,7 @@ describe("admin stock reports", () => {
         assert.equal((await api("/admin/stock/reports?dateFrom=2020-01-01&dateTo=2020-01-02", { token })).body.pagination.total, 0);
     });
 
-    test("Excel export has one column per product and measure", async () => {
+    test("Excel export: No. first, one column per product and measure, Picture last", async () => {
         const res = await api("/admin/stock/reports/export", { token });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-disposition"), /stock-reports-\d{4}-\d{2}-\d{2}\.xlsx/);
@@ -235,15 +237,65 @@ describe("admin stock reports", () => {
         await workbook.xlsx.load(res.body);
         const sheet = workbook.getWorksheet("Stock Reports");
         const headers = sheet.getRow(1).values.slice(1);
-        assert.deepEqual(headers.slice(0, 5), ["Outlet", "Province", "District", "Commune", "Reported At"]);
+        assert.deepEqual(headers.slice(0, 6), ["No.", "Outlet", "Province", "District", "Commune", "Reported At"]);
         assert.ok(headers.includes("GANZBERG · Ganzberg Snow · ចំនួនកេស"));
         assert.ok(headers.includes("GANZBERG · Ganzberg Snow · ចំនួនក្រវិលលុយ(រៀល)"));
         assert.ok(headers.includes("GANZBERG BEER WEDDING · ស្រាបៀរហ្គេនបឺគ Gold រោងការ · ចំនួនកេស"));
         // Wedding beer has a cases column only
         assert.equal(headers.filter((h) => /WEDDING/.test(h)).length, 2);
         assert.equal(headers.filter((h) => /ចំនួនកំប៉ុង|ចំនួនទឹកលុយគុល្លា|· ចំនួនក្រវិល$/.test(h)).length, 0);
-        assert.equal(headers.length, 5 + 3 * 4 + 2 * 1);
+        assert.equal(headers.at(-1), "Picture");
+        assert.equal(headers.length, 7 + 3 * 4 + 2 * 1);
         assert.equal(sheet.rowCount, 3);
+
+        // Rows are numbered 1..n in the first column
+        assert.deepEqual([sheet.getRow(2).getCell(1).value, sheet.getRow(3).getCell(1).value], [1, 2]);
+        // Each outlet's photo is embedded in the last (Picture) column, one per row
+        const images = sheet.getImages();
+        assert.equal(images.length, 2);
+        assert.ok(images.every((image) => image.range.tl.nativeCol === headers.length - 1));
+        assert.deepEqual(images.map((image) => image.range.tl.nativeRow).sort(), [1, 2]);
+    });
+
+    test("Excel export: no picture, and pictures past the memory limit, are explained in the cell", async () => {
+        const load = async () => {
+            const res = await api("/admin/stock/reports/export", { token });
+            assert.equal(res.status, 200);
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(res.body);
+            return workbook;
+        };
+        const pictureCells = (sheet) =>
+            Array.from({ length: sheet.rowCount - 1 }, (_, i) => sheet.getRow(i + 2).getCell(sheet.columnCount).value);
+
+        // An outlet whose only file is a PDF has no picture
+        const pdfOnly = await api("/public/submissions", {
+            method: "POST",
+            form: submissionForm(
+                validFields(fx, { saleGbId: undefined, clientName: "PDF Only Shop", stockItems: JSON.stringify(stockItems()) }),
+                [["doc.pdf", FILES.pdf()]]
+            )
+        });
+        assert.equal(pdfOnly.status, 201, JSON.stringify(pdfOnly.body));
+        let sheet = (await load()).getWorksheet("Stock Reports");
+        const outletCol = sheet.getRow(1).values.indexOf("Outlet");
+        const pdfRow = Array.from({ length: sheet.rowCount - 1 }, (_, i) => sheet.getRow(i + 2)).find(
+            (row) => row.getCell(outletCol).value === "PDF Only Shop"
+        );
+        assert.equal(pdfRow.getCell(sheet.columnCount).value, "No picture");
+
+        // Past the image limit pictures are not embedded, and a Notes sheet explains why
+        const saved = config.export.maxImageBytes;
+        config.export.maxImageBytes = 1;
+        try {
+            const workbook = await load();
+            sheet = workbook.getWorksheet("Stock Reports");
+            assert.equal(sheet.getImages().length, 0);
+            assert.ok(pictureCells(sheet).includes("(not shown: size limit)"));
+            assert.match(workbook.getWorksheet("Notes").getCell("A1").value, /image limit/);
+        } finally {
+            config.export.maxImageBytes = saved;
+        }
     });
 
     test("details and deleting a single report", async () => {

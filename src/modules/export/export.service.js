@@ -1,7 +1,15 @@
 import ExcelJS from "exceljs";
 import config from "../../config/env.js";
-import { BUCKET, minioClient } from "../../config/minio.js";
 import { businessDate, toBusinessWallTime } from "../../utils/date.js";
+import {
+    DOWNLOAD_CONCURRENCY,
+    EMBEDDABLE,
+    PHOTO_COLUMN_WIDTH,
+    ROW_HEIGHT_POINTS,
+    addThumbnail,
+    downloadObject,
+    mapWithLimit
+} from "../../utils/excel-images.js";
 import { Submission } from "../submission/submission.model.js";
 import { buildSort, buildSubmissionFilter } from "../submission/submission.service.js";
 
@@ -31,68 +39,13 @@ const EXPORT_PROJECTION = {
     "files.size": 1
 };
 
-// Formats Excel can display; others (WebP, PDF) are listed by name
-const EMBEDDABLE = { "image/jpeg": "jpeg", "image/png": "png" };
 const MAX_PHOTO_COLUMNS = 5;
-const DOWNLOAD_CONCURRENCY = 6;
-
-// Thumbnail box per cell, in pixels; rows and photo columns are sized to fit it
-const THUMB_WIDTH = 110;
-const THUMB_HEIGHT = 80;
-const PHOTO_COLUMN_WIDTH = 17; // Excel character units ≈ 124 px
-const ROW_HEIGHT_POINTS = 66; // ≈ 88 px
-
 const bilingual = (nameKh, nameEn) => (nameEn && nameEn !== nameKh ? `${nameKh} (${nameEn})` : nameKh);
 
 export const exportFileName = () => `client-submissions-${businessDate()}.xlsx`;
 
-/** Width/height from the PNG or JPEG header, so thumbnails keep their proportions */
-export const imageSize = (buffer) => {
-    if (buffer.length > 24 && buffer.readUInt32BE(0) === 0x89504e47) {
-        return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
-    }
-    if (buffer[0] === 0xff && buffer[1] === 0xd8) {
-        let offset = 2;
-        while (offset + 9 < buffer.length) {
-            if (buffer[offset] !== 0xff) break;
-            const marker = buffer[offset + 1];
-            const length = buffer.readUInt16BE(offset + 2);
-            // Start-of-frame markers carry the dimensions
-            if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-                return { height: buffer.readUInt16BE(offset + 5), width: buffer.readUInt16BE(offset + 7) };
-            }
-            offset += 2 + length;
-        }
-    }
-    return null;
-};
-
-const fitThumbnail = (size) => {
-    if (!size?.width || !size?.height) return { width: THUMB_WIDTH, height: THUMB_HEIGHT };
-    const scale = Math.min(THUMB_WIDTH / size.width, THUMB_HEIGHT / size.height, 1);
-    return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) };
-};
-
-const downloadObject = async (objectKey) => {
-    const stream = await minioClient.getObject(BUCKET, objectKey);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    return Buffer.concat(chunks);
-};
-
-/** Runs `worker` over `items` with at most `limit` in flight */
-const mapWithLimit = async (items, limit, worker) => {
-    const results = new Array(items.length);
-    let next = 0;
-    const run = async () => {
-        while (next < items.length) {
-            const index = next++;
-            results[index] = await worker(items[index], index);
-        }
-    };
-    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
-    return results;
-};
+// Kept for existing imports
+export { imageSize } from "../../utils/excel-images.js";
 
 /**
  * Builds the export workbook with photos embedded next to each client.
@@ -176,13 +129,11 @@ export const buildSubmissionsExport = async (query) => {
                 unavailable.push(`${file.originalName} (unavailable)`);
                 continue;
             }
-            const imageId = workbook.addImage({ buffer, extension: EMBEDDABLE[file.mimeType] });
-            const { width, height } = fitThumbnail(imageSize(buffer));
-            sheet.addImage(imageId, {
-                // Zero-based anchor; small offsets keep the picture inside its cell borders
-                tl: { col: firstPhotoColumn + embedded + 0.05, row: row.number - 1 + 0.05 },
-                ext: { width, height },
-                editAs: "oneCell"
+            addThumbnail(workbook, sheet, {
+                buffer,
+                mimeType: file.mimeType,
+                col: firstPhotoColumn + embedded,
+                rowNumber: row.number
             });
             embedded++;
         }
