@@ -71,3 +71,24 @@ export const addThumbnail = (workbook, sheet, { buffer, mimeType, col, rowNumber
         editAs: "oneCell"
     });
 };
+
+export const COORDINATES_COLUMN_WIDTH = 24;
+
+/**
+ * "latitude, longitude" of the outlet's first geotagged site photo, as a link
+ * that opens Google Maps; "No GPS" when no photo has a location.
+ */
+export const coordinatesCell = (files = []) => {
+    const located = files.find((file) => file.location?.type === "Point" && file.location.coordinates?.length === 2);
+    if (!located) return "No GPS";
+    const [longitude, latitude] = located.location.coordinates;
+    const text = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    return { text, hyperlink: `https://www.google.com/maps?q=${latitude},${longitude}` };
+};
+
+/** Writes coordinatesCell() into a cell, styled as a link when it is one */
+export const setCoordinates = (cell, files) => {
+    const value = coordinatesCell(files);
+    cell.value = value;
+    if (typeof value === "object") cell.font = { color: { argb: "FF0563C1" }, underline: true };
+};

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../middleware/auth.middleware.js";
 import authRoutes from "../modules/auth/auth.routes.js";
+import { adminDashboardRoutes } from "../modules/dashboard/dashboard.routes.js";
 import { adminLocationRoutes } from "../modules/location/location.routes.js";
 import { adminMapRoutes } from "../modules/map/map.routes.js";
 import { adminRoleRoutes, adminUserRoutes } from "../modules/rbac/rbac.routes.js";
@@ -16,6 +17,7 @@ router.use("/auth", authRoutes);
 // Everything below requires a valid admin token; each route then checks its permission
 router.use(requireAdmin);
 
+router.use("/dashboard", adminDashboardRoutes);
 router.use("/submissions", adminSubmissionRoutes);
 router.use("/sales", adminSaleRoutes);
 router.use("/locations", adminLocationRoutes);

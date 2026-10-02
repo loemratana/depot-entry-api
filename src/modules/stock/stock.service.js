@@ -8,10 +8,12 @@ import {
     DOWNLOAD_CONCURRENCY,
     EMBEDDABLE,
     PHOTO_COLUMN_WIDTH,
+    COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
     downloadObject,
-    mapWithLimit
+    mapWithLimit,
+    setCoordinates
 } from "../../utils/excel-images.js";
 import { Submission } from "../submission/submission.model.js";
 import { Brand } from "./brand.model.js";
@@ -167,7 +169,8 @@ const pickPicture = (files = []) => {
 
 /**
  * One row per report: No., outlet and location, one column per product and the
- * quantities its brand counts, and the outlet's picture in the last column. Product columns
+ * quantities its brand counts, the outlet's picture, and its GPS coordinates
+ * in the last column. Product columns
  * follow the current catalog order; products only found in older reports are
  * appended. Pictures are held in memory until the file is written, so their
  * total size is capped (EXPORT_MAX_IMAGE_MB); past the cap the cell says so.
@@ -201,11 +204,19 @@ export const buildStockExport = async (query) => {
     const outletIds = [...new Set(docs.map((doc) => doc.outletId.toString()))];
     const outlets = await Submission.find(
         { _id: { $in: outletIds } },
-        { "files.objectKey": 1, "files.mimeType": 1, "files.size": 1, "files.photoId": 1, "files.originalName": 1 }
+        {
+            "files.objectKey": 1,
+            "files.mimeType": 1,
+            "files.size": 1,
+            "files.photoId": 1,
+            "files.originalName": 1,
+            "files.location": 1
+        }
     )
         .maxTimeMS(config.exportQueryTimeoutMs)
         .lean();
     const pictureOf = new Map(outlets.map((outlet) => [outlet._id.toString(), pickPicture(outlet.files)]));
+    const filesOf = new Map(outlets.map((outlet) => [outlet._id.toString(), outlet.files ?? []]));
 
     const budget = config.export.maxImageBytes;
     let planned = 0;
@@ -250,13 +261,15 @@ export const buildStockExport = async (query) => {
                 width: 18
             }))
         ),
-        { header: "Picture", key: "picture", width: PHOTO_COLUMN_WIDTH }
+        { header: "Picture", key: "picture", width: PHOTO_COLUMN_WIDTH },
+        { header: "Coordinates", key: "coordinates", width: COORDINATES_COLUMN_WIDTH }
     ];
     const header = sheet.getRow(1);
     header.font = { bold: true };
     header.alignment = { wrapText: true, vertical: "middle" };
     header.height = 45;
-    const PICTURE_COLUMN = sheet.columns.length - 1; // last column, zero-based for image anchors
+    // Zero-based index of "Picture" for image anchors (second to last, before Coordinates)
+    const PICTURE_COLUMN = sheet.columns.length - 2;
 
     docs.forEach((doc, index) => {
         const outletId = doc.outletId.toString();
@@ -275,6 +288,7 @@ export const buildStockExport = async (query) => {
         const row = sheet.addRow(values);
         row.alignment = { vertical: "middle", wrapText: true };
         row.getCell("no").alignment = { vertical: "middle", horizontal: "center" };
+        setCoordinates(row.getCell("coordinates"), filesOf.get(outletId));
 
         const file = toEmbed.get(outletId);
         const buffer = pictureBuffer.get(outletId);

@@ -5,10 +5,12 @@ import {
     DOWNLOAD_CONCURRENCY,
     EMBEDDABLE,
     PHOTO_COLUMN_WIDTH,
+    COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
     downloadObject,
-    mapWithLimit
+    mapWithLimit,
+    setCoordinates
 } from "../../utils/excel-images.js";
 import { Submission } from "../submission/submission.model.js";
 import { buildSort, buildSubmissionFilter } from "../submission/submission.service.js";
@@ -36,7 +38,8 @@ const EXPORT_PROJECTION = {
     "files.originalName": 1,
     "files.objectKey": 1,
     "files.mimeType": 1,
-    "files.size": 1
+    "files.size": 1,
+    "files.location": 1
 };
 
 const MAX_PHOTO_COLUMNS = 5;
@@ -102,6 +105,8 @@ export const buildSubmissionsExport = async (query) => {
             key: `photo${i + 1}`,
             width: PHOTO_COLUMN_WIDTH
         })),
+        // Right after the photos
+        { header: "Coordinates", key: "coordinates", width: COORDINATES_COLUMN_WIDTH },
         { header: "Other files", key: "otherFiles", width: 40 }
     ];
     sheet.getRow(1).font = { bold: true };
@@ -120,6 +125,7 @@ export const buildSubmissionsExport = async (query) => {
             // Excel has no time zones; write the business-local wall time
             submittedAt: toBusinessWallTime(doc.submittedAt)
         });
+        setCoordinates(row.getCell("coordinates"), doc.files);
 
         const unavailable = [];
         let embedded = 0;

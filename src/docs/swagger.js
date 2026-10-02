@@ -94,6 +94,7 @@ const swaggerSpec = {
         { name: "Public – Sales" },
         { name: "Public – Submissions" },
         { name: "Admin – Auth" },
+        { name: "Admin – Dashboard" },
         { name: "Admin – Users & Roles", description: "Every admin endpoint needs a permission; a missing one returns 403" },
         { name: "Admin – Submissions" },
         { name: "Admin – Sales" }
@@ -445,6 +446,50 @@ const swaggerSpec = {
             }
         },
 
+        "/admin/dashboard": {
+            get: {
+                tags: ["Admin – Dashboard"],
+                summary: "Dashboard cards: outlets today / total and stock totals per product (outlets.view)",
+                description:
+                    "Filters by province, district, commune and period (dateFrom/dateTo, YYYY-MM-DD, Cambodia time). " +
+                    "todayOutlets is always today. `products` is null without stock.view; otherwise one entry per active " +
+                    "product in stock-form order with the totals of the quantities its brand counts.",
+                security: [{ bearerAuth: [] }],
+                parameters: [
+                    queryParam("provinceId", ref("ObjectId"), "Province"),
+                    queryParam("districtId", ref("ObjectId"), "District"),
+                    queryParam("communeId", ref("ObjectId"), "Commune"),
+                    queryParam("dateFrom", { type: "string", format: "date" }, "From (inclusive)"),
+                    queryParam("dateTo", { type: "string", format: "date" }, "To (inclusive)")
+                ],
+                responses: {
+                    200: {
+                        description: "Dashboard numbers",
+                        content: json(undefined, {
+                            success: true,
+                            data: {
+                                todayOutlets: 4,
+                                totalOutlets: 128,
+                                products: [
+                                    {
+                                        productId: ID,
+                                        name: "Ganzberg Gold",
+                                        shortName: "GB Gold",
+                                        brandName: "GANZBERG",
+                                        logoUrl: null,
+                                        measures: ["cases", "canRings", "cashRingsUsd", "cashRingsKhr"],
+                                        totals: { cases: 540, canRings: 32, cashRingsUsd: 12, cashRingsKhr: 40 },
+                                        outlets: 87
+                                    }
+                                ]
+                            }
+                        })
+                    },
+                    400: response("ValidationError"),
+                    403: response("Forbidden")
+                }
+            }
+        },
         "/admin/users": {
             get: {
                 tags: ["Admin – Users & Roles"],

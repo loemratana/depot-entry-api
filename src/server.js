@@ -4,6 +4,7 @@ import { connectDatabase, disconnectDatabase } from "./config/database.js";
 import { ensureBucket } from "./config/minio.js";
 import { backfillSaleNameKeys } from "./modules/sale/sale.model.js";
 import { ensureRbac } from "./modules/rbac/rbac.service.js";
+import { backfillProductShortNames } from "./modules/stock/product.model.js";
 import { completePendingStockReports } from "./modules/submission/submission.service.js";
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
@@ -49,6 +50,9 @@ const start = async () => {
         // Built-in roles; accounts from before roles existed become Super Admin
         const { migratedAdmins } = await ensureRbac();
         if (migratedAdmins) console.log(`Gave Super Admin to ${migratedAdmins} existing admin(s)`);
+
+        // Dashboard card labels for the original products (only where none is set)
+        await backfillProductShortNames();
 
         // Finishes stock reports interrupted by a previous stop (normally none)
         try {

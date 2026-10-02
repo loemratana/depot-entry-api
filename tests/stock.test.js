@@ -244,16 +244,18 @@ describe("admin stock reports", () => {
         // Wedding beer has a cases column only
         assert.equal(headers.filter((h) => /WEDDING/.test(h)).length, 2);
         assert.equal(headers.filter((h) => /ចំនួនកំប៉ុង|ចំនួនទឹកលុយគុល្លា|· ចំនួនក្រវិល$/.test(h)).length, 0);
-        assert.equal(headers.at(-1), "Picture");
-        assert.equal(headers.length, 7 + 3 * 4 + 2 * 1);
+        assert.deepEqual(headers.slice(-2), ["Picture", "Coordinates"]);
+        // These outlets have no geotagged site photo
+        assert.equal(sheet.getRow(2).getCell(headers.length).value, "No GPS");
+        assert.equal(headers.length, 8 + 3 * 4 + 2 * 1);
         assert.equal(sheet.rowCount, 3);
 
         // Rows are numbered 1..n in the first column
         assert.deepEqual([sheet.getRow(2).getCell(1).value, sheet.getRow(3).getCell(1).value], [1, 2]);
-        // Each outlet's photo is embedded in the last (Picture) column, one per row
+        // Each outlet's photo is embedded in the Picture column (second to last), one per row
         const images = sheet.getImages();
         assert.equal(images.length, 2);
-        assert.ok(images.every((image) => image.range.tl.nativeCol === headers.length - 1));
+        assert.ok(images.every((image) => image.range.tl.nativeCol === headers.length - 2));
         assert.deepEqual(images.map((image) => image.range.tl.nativeRow).sort(), [1, 2]);
     });
 
@@ -266,7 +268,7 @@ describe("admin stock reports", () => {
             return workbook;
         };
         const pictureCells = (sheet) =>
-            Array.from({ length: sheet.rowCount - 1 }, (_, i) => sheet.getRow(i + 2).getCell(sheet.columnCount).value);
+            Array.from({ length: sheet.rowCount - 1 }, (_, i) => sheet.getRow(i + 2).getCell(sheet.columnCount - 1).value);
 
         // An outlet whose only file is a PDF has no picture
         const pdfOnly = await api("/public/submissions", {
@@ -282,7 +284,7 @@ describe("admin stock reports", () => {
         const pdfRow = Array.from({ length: sheet.rowCount - 1 }, (_, i) => sheet.getRow(i + 2)).find(
             (row) => row.getCell(outletCol).value === "PDF Only Shop"
         );
-        assert.equal(pdfRow.getCell(sheet.columnCount).value, "No picture");
+        assert.equal(pdfRow.getCell(sheet.columnCount - 1).value, "No picture");
 
         // Past the image limit pictures are not embedded, and a Notes sheet explains why
         const saved = config.export.maxImageBytes;

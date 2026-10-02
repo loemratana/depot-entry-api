@@ -24,6 +24,7 @@ export const logoPath = (brand) =>
 const toProduct = (product) => ({
     id: product._id.toString(),
     name: product.name,
+    shortName: product.shortName ?? "",
     isActive: product.isActive,
     sortOrder: product.sortOrder
 });
@@ -188,11 +189,11 @@ export const getBrandLogo = async (id) => {
 
 // ---------- Products ----------
 
-export const createProduct = async (brandId, { name, isActive = true }) => {
+export const createProduct = async (brandId, { name, shortName = "", isActive = true }) => {
     const brand = await findBrandOr404(brandId);
     const last = await Product.findOne({ brandId: brand._id }).sort({ sortOrder: -1 }).select("sortOrder").lean();
     try {
-        const created = await Product.create({ brandId: brand._id, name, isActive, sortOrder: (last?.sortOrder ?? -1) + 1 });
+        const created = await Product.create({ brandId: brand._id, name, shortName, isActive, sortOrder: (last?.sortOrder ?? -1) + 1 });
         // The brand may have been deleted while this was being added: never leave an orphan
         if (!(await Brand.exists({ _id: brand._id }))) {
             await Product.deleteOne({ _id: created._id });
@@ -211,6 +212,7 @@ export const updateProduct = async (id, changes) => {
         product.name = changes.name;
         product.nameKey = nameKey(changes.name);
     }
+    if (changes.shortName !== undefined) product.shortName = changes.shortName;
     if (changes.isActive !== undefined) product.isActive = changes.isActive;
     try {
         await product.save();

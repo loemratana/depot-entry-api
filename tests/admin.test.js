@@ -224,10 +224,11 @@ describe("Excel export", () => {
         const sheet = await readSheet(res.body);
         // Seeded rows only have PDFs, so there are no photo columns; PDFs are listed by name
         assert.deepEqual(sheet.getRow(1).values.slice(1), [
-            "Client Name", "Phone", "Province", "District", "Commune", "Submitted At", "Other files"
+            "Client Name", "Phone", "Province", "District", "Commune", "Submitted At", "Coordinates", "Other files"
         ]);
         assert.equal(sheet.rowCount, 26);
-        assert.equal(sheet.getRow(2).getCell(7).value, "a.pdf");
+        assert.equal(sheet.getRow(2).getCell(7).value, "No GPS");
+        assert.equal(sheet.getRow(2).getCell(8).value, "a.pdf");
         assert.ok(!sheet.getRow(1).values.includes("Submission No"), "Submission No is not exported");
         assert.ok(!sheet.getRow(1).values.includes("Sale GB"), "Sale GB is not exported");
     });
@@ -254,7 +255,9 @@ describe("Excel export", () => {
         await workbook.xlsx.load(res.body);
         const sheet = workbook.getWorksheet("Client Submissions");
 
-        assert.deepEqual(sheet.getRow(1).values.slice(7), ["Photo 1", "Photo 2", "Other files"]);
+        assert.deepEqual(sheet.getRow(1).values.slice(7), ["Photo 1", "Photo 2", "Coordinates", "Other files"]);
+        // No geotagged site photo on this outlet
+        assert.equal(sheet.getRow(2).getCell(9).value, "No GPS");
         const images = sheet.getImages();
         assert.equal(images.length, 2);
         // Anchored in the photo columns (zero-based 6 and 7) of the client's row (zero-based 1)
@@ -262,7 +265,7 @@ describe("Excel export", () => {
             images.map((image) => [Math.floor(image.range.tl.nativeCol), Math.floor(image.range.tl.nativeRow)]).sort(),
             [[6, 1], [7, 1]]
         );
-        assert.equal(sheet.getRow(2).getCell(9).value, "contract.pdf");
+        assert.equal(sheet.getRow(2).getCell(10).value, "contract.pdf");
 
         await api(`/admin/submissions/${created.body.data.submissionNo ? (await Submission.findOne({ clientName: "Photo Client" }))._id : ""}`, {
             method: "DELETE",

@@ -70,13 +70,23 @@ export const moveProductSchema = moveSchema(productId);
 
 export const createProductSchema = {
     params: brandId,
-    body: z.object({ name: name("Product name", 150), isActive: z.boolean().optional() }).strict()
+    body: z
+        .object({
+            name: name("Product name", 150),
+            shortName: optionalText("Short name", 30).optional(),
+            isActive: z.boolean().optional()
+        })
+        .strict()
 };
 
 export const updateProductSchema = {
     params: productId,
     body: z
-        .object({ name: name("Product name", 150).optional(), isActive: z.boolean().optional() })
+        .object({
+            name: name("Product name", 150).optional(),
+            shortName: optionalText("Short name", 30).optional(),
+            isActive: z.boolean().optional()
+        })
         .strict()
         .superRefine(atLeastOne)
 };

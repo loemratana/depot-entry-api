@@ -323,3 +323,31 @@ describe("admin Add outlet uses the same form as the public one", () => {
         assert.ok(doc.files[0].uploadedBy, "file records the admin who added it");
     });
 });
+
+describe("exports show the site photo coordinates", () => {
+    test("Outlet export: Coordinates column right after the photos, with a Google Maps link", async () => {
+        const photoId = newPhotoId();
+        const res = await submitWithPhotos({
+            fields: { clientName: "Coords Outlet", stockItems: undefined },
+            photos: [{ photoId, name: "shop.jpg" }],
+            meta: [gps(photoId, { latitude: 11.5564, longitude: 104.9282 })]
+        });
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+
+        const ExcelJS = (await import("exceljs")).default;
+        const load = async (url, sheetName) => {
+            const file = await api(url, { token });
+            assert.equal(file.status, 200);
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(file.body);
+            return workbook.getWorksheet(sheetName);
+        };
+        const sheet = await load(`/admin/submissions/export?search=${encodeURIComponent("Coords Outlet")}`, "Client Submissions");
+        const col = sheet.getRow(1).values.indexOf("Coordinates");
+        assert.ok(col > 0, "Coordinates column present");
+        assert.equal(sheet.getRow(1).values[col - 1], "Photo 1", "right after the photos");
+        const cell = sheet.getRow(2).getCell(col).value;
+        assert.equal(cell.text, "11.556400, 104.928200");
+        assert.equal(cell.hyperlink, "https://www.google.com/maps?q=11.5564,104.9282");
+    });
+});
