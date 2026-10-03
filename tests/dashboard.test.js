@@ -75,6 +75,8 @@ describe("dashboard", () => {
         assert.equal(res.status, 200, JSON.stringify(res.body));
         assert.equal(res.body.data.todayOutlets, 2);
         assert.equal(res.body.data.totalOutlets, 3);
+        // Gold 115 + Wedding Gold 3 cases; all 3 outlets reported stock
+        assert.deepEqual(res.body.data.totalStock, { cases: 118, outlets: 3 });
 
         const names = res.body.data.products.map((p) => p.shortName);
         assert.deepEqual(names, ["GB Snow", "GB Gold", "GB Gold Wedding"]);
@@ -93,6 +95,7 @@ describe("dashboard", () => {
         assert.equal(p1.totalOutlets, 2);
         assert.equal(p1.todayOutlets, 1);
         assert.equal(p1.products.find((p) => p.shortName === "GB Gold").totals.cases, 105);
+        assert.deepEqual(p1.totalStock, { cases: 108, outlets: 2 });
 
         const commune2 = (await dashboard(`?provinceId=${fx.p2._id}&districtId=${fx.d2._id}&communeId=${fx.c2._id}`)).body.data;
         assert.equal(commune2.totalOutlets, 1);
@@ -121,6 +124,7 @@ describe("dashboard", () => {
         assert.equal(res.status, 200);
         assert.equal(res.body.data.totalOutlets, 3);
         assert.equal(res.body.data.products, null);
+        assert.equal(res.body.data.totalStock, null);
 
         const stockOnly = await createUserWithPermissions(["stock.view"]);
         assert.equal((await dashboard("", stockOnly.token)).status, 403);
@@ -138,5 +142,34 @@ describe("dashboard", () => {
         await api(`/admin/stock/products/${snow._id}`, { method: "PATCH", token, json: { shortName: "" } });
         const named = (await dashboard()).body.data.products.find((p) => p.productId === snow._id.toString());
         assert.equal(named.shortName, "Ganzberg Snow");
+    });
+});
+
+describe("stock by province", () => {
+    test("cases per province and product, largest first; provinces without stock still listed at 0", async () => {
+        const res = await api("/admin/dashboard/provinces", { token });
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        const { products, provinces } = res.body.data;
+        // Snow's short name was cleared by an earlier test, so it shows its full name
+        assert.deepEqual(products.map((p) => p.shortName), ["Ganzberg Snow", "GB Gold", "GB Gold Wedding"]);
+        // Province 1: Gold 5 + 100, Wedding Gold 3 → 108; Province 2: Gold 10
+        assert.deepEqual(provinces.map((p) => [p.nameEn, p.total]), [["Test Province One", 108], ["Test Province Two", 10]]);
+
+        // A province with no stock is included, at the end, with 0 for every product
+        const { Province } = await import("../src/modules/location/province.model.js");
+        await Province.create({ code: "99", nameKh: "ខេត្តទទេ", nameEn: "Empty Province" });
+        const all = (await api("/admin/dashboard/provinces", { token })).body.data.provinces;
+        assert.deepEqual(all.at(-1), { id: all.at(-1).id, nameKh: "ខេត្តទទេ", nameEn: "Empty Province", cases: [0, 0, 0], total: 0 });
+        assert.equal(all.length, 3);
+        assert.deepEqual(provinces[0].cases, [0, 105, 3]);
+    });
+
+    test("date range applies; requires stock.view", async () => {
+        const recent = (await api("/admin/dashboard/provinces?dateFrom=2026-01-01", { token })).body.data.provinces;
+        assert.deepEqual(recent.map((p) => [p.nameEn, p.total]), [["Test Province Two", 10], ["Test Province One", 8], ["Empty Province", 0]]);
+        assert.equal((await api("/admin/dashboard/provinces?dateFrom=2026-02-01&dateTo=2026-01-01", { token })).status, 400);
+
+        const outletsOnly = await createUserWithPermissions(["outlets.view"]);
+        assert.equal((await api("/admin/dashboard/provinces", { token: outletsOnly.token })).status, 403);
     });
 });
