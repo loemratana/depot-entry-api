@@ -159,9 +159,11 @@ describe("stock by province", () => {
         const { Province } = await import("../src/modules/location/province.model.js");
         await Province.create({ code: "99", nameKh: "ខេត្តទទេ", nameEn: "Empty Province" });
         const all = (await api("/admin/dashboard/provinces", { token })).body.data.provinces;
-        assert.deepEqual(all.at(-1), { id: all.at(-1).id, nameKh: "ខេត្តទទេ", nameEn: "Empty Province", cases: [0, 0, 0], total: 0 });
+        assert.deepEqual(all.at(-1), { id: all.at(-1).id, nameKh: "ខេត្តទទេ", nameEn: "Empty Province", cases: [0, 0, 0], total: 0, outlets: 0 });
         assert.equal(all.length, 3);
         assert.deepEqual(provinces[0].cases, [0, 105, 3]);
+        // Outlets per province: A and C in province 1, B in province 2
+        assert.deepEqual(provinces.map((p) => p.outlets), [2, 1]);
     });
 
     test("date range applies; requires stock.view", async () => {
