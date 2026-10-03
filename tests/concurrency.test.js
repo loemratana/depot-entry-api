@@ -22,7 +22,8 @@ import {
     start,
     stop,
     submissionForm,
-    validFields
+    validFields,
+    withGpsPhotos
 } from "./helpers.js";
 
 const { Brand } = await import("../src/modules/stock/brand.model.js");
@@ -301,7 +302,7 @@ describe("deleting an outlet", () => {
 
 describe("admin create outlet with Idempotency-Key", () => {
     const adminForm = (clientName) =>
-        submissionForm(validFields(fx, { clientName }), [["front.png", FILES.png()]]);
+        withGpsPhotos(submissionForm(validFields(fx, { clientName }), []), [["front.png", FILES.png()]]);
 
     test("concurrent requests with the same key add exactly one outlet", async () => {
         const headers = { "Idempotency-Key": "admin-create-race-0001" };

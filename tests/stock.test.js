@@ -14,7 +14,8 @@ import {
     start,
     stop,
     submissionForm,
-    validFields
+    validFields,
+    withGpsPhotos
 } from "./helpers.js";
 
 const { Brand } = await import("../src/modules/stock/brand.model.js");
@@ -70,8 +71,13 @@ const stockItems = () => [
 const submitOutlet = (overrides = {}, items = stockItems(), headers) =>
     api("/public/submissions", {
         method: "POST",
-        form: submissionForm(
-            validFields(fx, { saleGbId: undefined, ...overrides, stockItems: items === null ? undefined : JSON.stringify(items) })
+        // Each outlet has one site photo with GPS, like the form sends
+        form: withGpsPhotos(
+            submissionForm(
+                validFields(fx, { saleGbId: undefined, ...overrides, stockItems: items === null ? undefined : JSON.stringify(items) }),
+                []
+            ),
+            [["shop.png", FILES.png()]]
         ),
         headers
     });
@@ -245,8 +251,8 @@ describe("admin stock reports", () => {
         assert.equal(headers.filter((h) => /WEDDING/.test(h)).length, 2);
         assert.equal(headers.filter((h) => /ចំនួនកំប៉ុង|ចំនួនទឹកលុយគុល្លា|· ចំនួនក្រវិល$/.test(h)).length, 0);
         assert.deepEqual(headers.slice(-2), ["Picture", "Coordinates"]);
-        // These outlets have no geotagged site photo
-        assert.equal(sheet.getRow(2).getCell(headers.length).value, "No GPS");
+        // Each outlet's site photo has GPS: coordinates link to Google Maps
+        assert.equal(sheet.getRow(2).getCell(headers.length).value.text, "11.556400, 104.928200");
         assert.equal(headers.length, 8 + 3 * 4 + 2 * 1);
         assert.equal(sheet.rowCount, 3);
 

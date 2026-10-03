@@ -184,10 +184,21 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
 
     // Site photos alone satisfy "at least one file"; documents are checked as before
     const verifiedPhotos = await verifySitePhotos(sitePhotos, input.sitePhotoMeta);
-    const verifiedFiles = [
-        ...(files?.length || verifiedPhotos.length === 0 ? await validateSubmissionFiles(files) : []),
-        ...verifiedPhotos
-    ];
+    const verifiedDocuments =
+        files?.length || verifiedPhotos.length === 0 ? await validateSubmissionFiles(files) : [];
+    // A new outlet's photos must carry GPS: they come as site photos with a location,
+    // never as plain files (only PDFs may be attached without a location)
+    const photosWithoutGps = verifiedDocuments.filter((file) => file.detectedMimeType.startsWith("image/"));
+    if (photosWithoutGps.length) {
+        throw ApiError.validation(
+            photosWithoutGps.map((file) => ({
+                field: "sitePhotos",
+                message: `"${file.originalname}" has no GPS location. Allow location and submit again`
+            })),
+            "Photos need a GPS location"
+        );
+    }
+    const verifiedFiles = [...verifiedDocuments, ...verifiedPhotos];
     const locationFields = await resolveLocationFields(input);
     const saleFields = await resolveSaleFields(input);
     // The outlet's stock is checked before any file is uploaded

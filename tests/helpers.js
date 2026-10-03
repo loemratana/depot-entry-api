@@ -157,7 +157,8 @@ export const FILES = {
     oversized: () => new Blob([Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(1024 * 1024 + 10)])], { type: "application/pdf" })
 };
 
-export const submissionForm = (fields, files = [["doc.png", FILES.png()]]) => {
+// The default attachment is a PDF: photos of a new outlet must come as GPS site photos
+export const submissionForm = (fields, files = [["doc.pdf", FILES.pdf()]]) => {
     const form = new FormData();
     for (const [key, value] of Object.entries(fields)) {
         if (value !== undefined) form.append(key, String(value));
@@ -175,3 +176,20 @@ export const validFields = (fx, overrides = {}) => ({
     saleGbId: fx.sale._id,
     ...overrides
 });
+
+let gpsPhotoCounter = 0;
+
+/**
+ * Adds images as GPS site photos, the way the outlet form sends them (a new
+ * outlet's photos must have a location). `photos` is [[name, blob], ...].
+ */
+export const withGpsPhotos = (form, photos) => {
+    const meta = JSON.parse(form.get("sitePhotoMeta") || "[]");
+    for (const [name, blob] of photos) {
+        const photoId = `test-photo-${Date.now().toString(36)}-${gpsPhotoCounter++}`;
+        meta.push({ photoId, latitude: 11.5564, longitude: 104.9282, accuracy: 10, capturedAt: new Date().toISOString() });
+        form.append(`sitePhotos[${photoId}]`, blob, name);
+    }
+    form.set("sitePhotoMeta", JSON.stringify(meta));
+    return form;
+};

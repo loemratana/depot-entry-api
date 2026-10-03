@@ -10,7 +10,8 @@ import {
     start,
     stop,
     submissionForm,
-    validFields
+    validFields,
+    withGpsPhotos
 } from "./helpers.js";
 
 let fx;
@@ -68,10 +69,10 @@ describe("public sales", () => {
 describe("public submission", () => {
     test("creates a submission with snapshots and stores files in MinIO", async () => {
         const startedAt = Date.now();
-        const res = await submit(validFields(fx), [
-            ["photo.png", FILES.png()],
-            ["លិខិត.pdf", FILES.pdf()]
+        const form = withGpsPhotos(submissionForm(validFields(fx), [["លិខិត.pdf", FILES.pdf()]]), [
+            ["photo.png", FILES.png()]
         ]);
+        const res = await api("/public/submissions", { method: "POST", form });
 
         assert.equal(res.status, 201);
         assert.equal(res.body.message, "Submission received successfully");
@@ -86,10 +87,11 @@ describe("public submission", () => {
         assert.equal(doc.communeNameEn, "Test Commune One");
         assert.equal(doc.saleGbName, "Test Sale A");
         assert.equal(doc.files.length, 2);
-        assert.equal(doc.files[1].originalName, "លិខិត.pdf");
-        assert.equal(doc.files[1].mimeType, "application/pdf");
-        assert.match(doc.files[0].objectKey, new RegExp(`^submissions/${doc._id}/[0-9a-f-]{36}\\.png$`));
-        assert.equal(doc.files[0].uploadedBy, null);
+        assert.equal(doc.files[0].originalName, "លិខិត.pdf");
+        assert.equal(doc.files[0].mimeType, "application/pdf");
+        assert.match(doc.files[1].objectKey, new RegExp(`^submissions/${doc._id}/[0-9a-f-]{36}\\.png$`));
+        assert.deepEqual(doc.files[1].location.coordinates, [104.9282, 11.5564]);
+        assert.equal(doc.files[1].uploadedBy, null);
 
         // Every file has its own upload time, within the request and not after the submission time
         for (const file of doc.files) {
@@ -104,9 +106,23 @@ describe("public submission", () => {
 
     test("accepts files sent as files[]", async () => {
         const form = submissionForm(validFields(fx), []);
-        form.append("files[]", FILES.jpg(), "a.jpg");
+        form.append("files[]", FILES.pdf(), "a.pdf");
         const res = await api("/public/submissions", { method: "POST", form });
         assert.equal(res.status, 201);
+    });
+
+    test("a photo without GPS is refused; a PDF alone is still accepted", async () => {
+        const before = (await listBucketKeys()).length;
+        const plainPhoto = submissionForm(validFields(fx, { saleGbId: undefined }), [["shop.jpg", FILES.jpg()]]);
+        const res = await api("/public/submissions", { method: "POST", form: plainPhoto });
+        assert.equal(res.status, 400);
+        assert.equal(res.body.message, "Photos need a GPS location");
+        assert.equal(res.body.errors[0].field, "sitePhotos");
+        assert.match(res.body.errors[0].message, /shop.jpg.*no GPS/);
+        assert.equal((await listBucketKeys()).length, before, "nothing stored");
+
+        const pdfOnly = await api("/public/submissions", { method: "POST", form: submissionForm(validFields(fx)) });
+        assert.equal(pdfOnly.status, 201);
     });
 
     test("requires at least one file", async () => {

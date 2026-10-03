@@ -227,12 +227,17 @@ describe("GET /api/admin/map/submissions", () => {
         // Outlet Two was submitted in January
         await Submission.updateOne({ _id: insideP2._id }, { $set: { submittedAt: new Date("2026-01-15T05:00:00Z") } });
 
-        // A submission from before GPS existed: a photo with no location fields
+        // A submission from before GPS existed: a photo with no location fields.
+        // Photos now need GPS, so it is stored as a document and then turned into an old-style photo
         const plain = await api("/public/submissions", {
             method: "POST",
-            form: submissionForm(validFields(fx, { saleGbId: undefined, clientName: "Old Outlet" }), [["old.jpg", FILES.jpg()]])
+            form: submissionForm(validFields(fx, { saleGbId: undefined, clientName: "Old Outlet" }))
         });
         assert.equal(plain.status, 201);
+        await Submission.updateOne(
+            { submissionNo: plain.body.data.submissionNo },
+            { $set: { "files.0.mimeType": "image/jpeg", "files.0.originalName": "old.jpg" } }
+        );
         oldStyle = await findBySubmissionNo(plain.body.data.submissionNo);
     });
 

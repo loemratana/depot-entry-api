@@ -12,7 +12,8 @@ import {
     login,
     mongoose,
     start,
-    stop
+    stop,
+    withGpsPhotos
 } from "./helpers.js";
 
 let fx;
@@ -244,8 +245,7 @@ describe("Excel export", () => {
             communeId: fx.c1._id,
             saleGbId: fx.sale._id
         })) form.append(key, String(value));
-        form.append("files", FILES.png(), "front.png");
-        form.append("files", FILES.jpg(), "back.jpg");
+        withGpsPhotos(form, [["front.png", FILES.png()], ["back.jpg", FILES.jpg()]]);
         form.append("files", FILES.pdf(), "contract.pdf");
         const created = await api("/admin/submissions", { method: "POST", token, form });
         assert.equal(created.status, 201);
@@ -256,8 +256,8 @@ describe("Excel export", () => {
         const sheet = workbook.getWorksheet("Client Submissions");
 
         assert.deepEqual(sheet.getRow(1).values.slice(7), ["Photo 1", "Photo 2", "Coordinates", "Other files"]);
-        // No geotagged site photo on this outlet
-        assert.equal(sheet.getRow(2).getCell(9).value, "No GPS");
+        // The photos were sent with GPS, so the outlet has coordinates
+        assert.equal(sheet.getRow(2).getCell(9).value.text, "11.556400, 104.928200");
         const images = sheet.getImages();
         assert.equal(images.length, 2);
         // Anchored in the photo columns (zero-based 6 and 7) of the client's row (zero-based 1)
@@ -379,7 +379,7 @@ describe("admin client CRUD", () => {
         const res = await api("/admin/submissions", {
             method: "POST",
             token,
-            form: form(fields(), [["id.png", FILES.png()]])
+            form: withGpsPhotos(form(fields(), []), [["id.png", FILES.png()]])
         });
         assert.equal(res.status, 201);
         const doc = await Submission.findOne({ submissionNo: res.body.data.submissionNo }).lean();
