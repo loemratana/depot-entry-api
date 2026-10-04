@@ -13,6 +13,12 @@ import { StockReport } from "../stock/stockReport.model.js";
 import { validateSubmissionFiles } from "../upload/file.validation.js";
 import { removeUploadedObjects, uploadSubmissionFiles } from "../upload/upload.service.js";
 import { Submission } from "./submission.model.js";
+import {
+    claimStagedPhotos,
+    copyStagedPhotos,
+    finishStagedPhotos,
+    releaseStagedPhotos
+} from "./stagedPhoto.service.js";
 
 // Crockford base32: no I, L, O, U, so numbers read back over the phone are unambiguous
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -104,28 +110,44 @@ const resolveSaleFields = async ({ saleGbId, saleGbName }) => {
     return { saleGbId: sale._id, saleGbName: sale.name };
 };
 
+const gpsFields = (photoId, gps) => ({
+    photoId,
+    location: { type: "Point", coordinates: [gps.longitude, gps.latitude] },
+    accuracy: gps.accuracy,
+    capturedAt: gps.capturedAt
+});
+
 /**
- * Pairs each site photo with the GPS entry that has the same photoId, verifies
- * the photo by content (images only) and attaches the GPS as GeoJSON.
- * Every photo needs GPS and every GPS entry needs its photo.
+ * Pairs each site photo (sent with the form, or uploaded earlier and sent as
+ * an uploadId) with the GPS entry that has the same photoId, verifies sent
+ * photos by content (images only) and attaches the GPS as GeoJSON. Every photo
+ * needs GPS and every GPS entry needs its photo.
  */
-const verifySitePhotos = async (sitePhotos, gpsEntries = []) => {
+const verifySitePhotos = async (sitePhotos, gpsEntries = [], stagedPhotos = []) => {
     const gpsById = new Map(gpsEntries.map((entry) => [entry.photoId, entry]));
-    const photoIds = new Set(sitePhotos.map((photo) => photo.photoId));
+    const stagedIds = new Set(stagedPhotos.map((photo) => photo.photoId));
+    const photoIds = new Set([...sitePhotos.map((photo) => photo.photoId), ...stagedIds]);
 
     const errors = [
+        ...sitePhotos
+            .filter((photo) => stagedIds.has(photo.photoId))
+            .map((photo) => ({ field: `sitePhotos.${photo.photoId}`, message: "Photo sent twice (file and uploadId)" })),
         ...sitePhotos
             .filter((photo) => !gpsById.has(photo.photoId))
             .map((photo) => ({
                 field: `sitePhotos.${photo.photoId}`,
                 message: `"${photo.file.originalname}" has no GPS location`
             })),
+        ...stagedPhotos
+            .filter((photo) => !gpsById.has(photo.photoId))
+            .map((photo) => ({ field: `stagedPhotos.${photo.photoId}`, message: "Photo has no GPS location" })),
         ...gpsEntries
             .filter((entry) => !photoIds.has(entry.photoId))
             .map((entry) => ({ field: `sitePhotoMeta.${entry.photoId}`, message: "GPS entry has no matching photo" }))
     ];
     if (errors.length) throw ApiError.validation(errors, "Site photos and GPS do not match");
-    if (sitePhotos.length === 0) return [];
+    const staged = stagedPhotos.map((photo) => ({ ...photo, gps: gpsFields(photo.photoId, gpsById.get(photo.photoId)) }));
+    if (sitePhotos.length === 0) return { sent: [], staged };
 
     let verified;
     try {
@@ -142,24 +164,16 @@ const verifySitePhotos = async (sitePhotos, gpsEntries = []) => {
     }
 
     // validateSubmissionFiles keeps the input order when every file is valid
-    return verified.map((file, index) => {
+    const sent = verified.map((file, index) => {
         const { photoId } = sitePhotos[index];
         if (!file.detectedMimeType.startsWith("image/")) {
             throw new ApiError(415, "Unsupported file type", [
                 { field: `sitePhotos.${photoId}`, message: "A site photo must be a JPG, PNG or WebP image" }
             ]);
         }
-        const gps = gpsById.get(photoId);
-        return {
-            ...file,
-            gps: {
-                photoId,
-                location: { type: "Point", coordinates: [gps.longitude, gps.latitude] },
-                accuracy: gps.accuracy,
-                capturedAt: gps.capturedAt
-            }
-        };
+        return { ...file, gps: gpsFields(photoId, gpsById.get(photoId)) };
     });
+    return { sent, staged };
 };
 
 /**
@@ -170,6 +184,9 @@ const verifySitePhotos = async (sitePhotos, gpsEntries = []) => {
  *   5. write the stock report (same _id as the outlet), then clear pendingStock
  * If step 3 partially fails, the objects from this request are removed.
  * If step 4 fails, every object uploaded in step 3 is removed.
+ * Photos uploaded earlier (stagedPhotos) are reserved for this outlet before
+ * step 3 and copied in step 3; whenever the outlet is not created they are
+ * released again, so a retry can still use them.
  * If step 5 fails, the outlet and its files are removed (all or nothing). If the
  * process stops during step 5, or that clean-up fails, the pendingStock left on
  * the outlet is finished by a retry with the same Idempotency-Key or at the next
@@ -183,9 +200,18 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
     }
 
     // Site photos alone satisfy "at least one file"; documents are checked as before
-    const verifiedPhotos = await verifySitePhotos(sitePhotos, input.sitePhotoMeta);
-    const verifiedDocuments =
-        files?.length || verifiedPhotos.length === 0 ? await validateSubmissionFiles(files) : [];
+    const { sent: verifiedPhotos, staged: stagedPhotos } = await verifySitePhotos(
+        sitePhotos,
+        input.sitePhotoMeta,
+        input.stagedPhotos
+    );
+    const photoCount = verifiedPhotos.length + stagedPhotos.length;
+    const verifiedDocuments = files?.length || photoCount === 0 ? await validateSubmissionFiles(files) : [];
+    if (verifiedDocuments.length + photoCount > config.upload.maxFiles) {
+        throw ApiError.validation([
+            { field: "files", message: `A maximum of ${config.upload.maxFiles} files is allowed` }
+        ]);
+    }
     // A new outlet's photos must carry GPS: they come as site photos with a location,
     // never as plain files (only PDFs may be attached without a location)
     const photosWithoutGps = verifiedDocuments.filter((file) => file.detectedMimeType.startsWith("image/"));
@@ -207,7 +233,25 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
         : null;
 
     const submissionId = new mongoose.Types.ObjectId();
-    const uploadedFiles = await uploadSubmissionFiles(submissionId, verifiedFiles, { uploadedBy });
+    const claimed = await claimStagedPhotos(stagedPhotos, submissionId);
+    let uploadedFiles;
+    try {
+        const uploaded = await uploadSubmissionFiles(submissionId, verifiedFiles, { uploadedBy });
+        let copied;
+        try {
+            copied = await copyStagedPhotos(submissionId, claimed, { uploadedBy });
+        } catch (error) {
+            await removeUploadedObjects(uploaded.map((file) => file.objectKey));
+            throw error;
+        }
+        // Documents first, then the photos in the order they were added on the form
+        const order = new Map((input.sitePhotoMeta ?? []).map((entry, index) => [entry.photoId, index]));
+        const rank = (file) => (file.photoId === undefined ? -1 : (order.get(file.photoId) ?? -1));
+        uploadedFiles = [...uploaded, ...copied].sort((a, b) => rank(a) - rank(b));
+    } catch (error) {
+        await releaseStagedPhotos(submissionId);
+        throw error;
+    }
 
     const submittedAt = new Date();
     const document = {
@@ -252,6 +296,7 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
         }
     } catch (error) {
         await removeUploadedObjects(uploadedFiles.map((file) => file.objectKey));
+        await releaseStagedPhotos(submissionId);
 
         // A concurrent request with the same Idempotency-Key won the race
         if (duplicateKeyField(error) === "idempotencyKey") {
@@ -272,6 +317,7 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
                 await Submission.deleteOne({ _id: submissionId, pendingStock: { $exists: true } });
                 await StockReport.deleteOne({ _id: submissionId });
                 await removeUploadedObjects(uploadedFiles.map((file) => file.objectKey));
+                await releaseStagedPhotos(submissionId);
             } catch (cleanupError) {
                 console.error(`Outlet ${submissionId}: stock report pending, clean-up failed:`, cleanupError.message);
             }
@@ -279,6 +325,7 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
         }
     }
 
+    await finishStagedPhotos(submissionId);
     return { submissionNo: document.submissionNo, replayed: false };
 };
 
@@ -349,7 +396,7 @@ export const removeSubmissionFile = async (id, fileId) => {
         throw ApiError.conflict("A submission must keep at least one file. Add another file before removing this one");
     }
 
-    await removeUploadedObjects([file.objectKey]);
+    await removeUploadedObjects([file.objectKey, file.thumbnailKey, file.previewKey].filter(Boolean));
     return getSubmissionDetails(id);
 };
 
@@ -363,10 +410,14 @@ export const deleteSubmission = async (id) => {
     const existing = await Submission.exists({ _id: id });
     if (!existing) throw ApiError.notFound("Submission not found");
     await StockReport.deleteMany({ outletId: existing._id });
-    const doc = await Submission.findOneAndDelete({ _id: existing._id }).select("files.objectKey").lean();
+    const doc = await Submission.findOneAndDelete({ _id: existing._id })
+        .select("files.objectKey files.thumbnailKey files.previewKey")
+        .lean();
     // Deleted by a concurrent request in the meantime
     if (!doc) throw ApiError.notFound("Submission not found");
-    await removeUploadedObjects(doc.files.map((file) => file.objectKey));
+    await removeUploadedObjects(
+        doc.files.flatMap((file) => [file.objectKey, file.thumbnailKey, file.previewKey].filter(Boolean))
+    );
 };
 
 export const buildSubmissionFilter = ({ search, provinceId, districtId, communeId, saleGbId, dateFrom, dateTo }) => {

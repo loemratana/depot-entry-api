@@ -13,20 +13,8 @@ const common = {
     skip: () => config.isTest
 };
 
-export const publicApiLimiter = rateLimit({
-    ...common,
-    windowMs: 15 * 60 * 1000,
-    limit: config.rateLimit.publicApiMax,
-    handler: limitReached("Too many requests. Please try again later")
-});
-
-export const submissionLimiter = rateLimit({
-    ...common,
-    windowMs: config.rateLimit.submissionWindowMs,
-    limit: config.rateLimit.submissionMax,
-    handler: limitReached("Too many submissions from this network. Please try again later")
-});
-
+// Only failed logins are limited (password guessing); public routes and
+// outlet submissions have no rate limit
 export const loginLimiter = rateLimit({
     ...common,
     windowMs: 15 * 60 * 1000,

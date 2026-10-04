@@ -40,6 +40,9 @@ export const putObjectFromFile = (objectKey, filePath, mimeType) =>
 export const putObjectFromBuffer = (objectKey, buffer, mimeType) =>
     minioClient.putObject(BUCKET, objectKey, buffer, buffer.length, { "Content-Type": mimeType });
 
+/** Server-side copy inside the bucket (nothing is downloaded) */
+export const copyObject = (fromKey, toKey) => minioClient.copyObject(BUCKET, toKey, `/${BUCKET}/${fromKey}`);
+
 export const getObjectStream = (objectKey) => minioClient.getObject(BUCKET, objectKey);
 
 export const removeObjects = async (objectKeys) => {
@@ -54,3 +57,28 @@ export const getPresignedUrl = (objectKey, fileName) =>
     });
 
 export const URL_EXPIRY_SECONDS = urlExpirySeconds;
+
+/*
+ * Links for images shown on the map. A normal link is new on every request, so
+ * the browser downloaded every image again on each visit. These are signed for
+ * a fixed 6-hour window (same link for everyone during it) and valid for 12
+ * hours from its start, so the browser can keep the image while the link stays
+ * the same.
+ */
+const CACHEABLE_WINDOW_MS = 6 * 60 * 60 * 1000;
+const CACHEABLE_EXPIRY_SECONDS = 12 * 60 * 60;
+
+export const getCacheablePresignedUrl = async (objectKey, fileName) => {
+    const windowStart = new Date(Math.floor(Date.now() / CACHEABLE_WINDOW_MS) * CACHEABLE_WINDOW_MS);
+    const url = await minioClient.presignedGetObject(
+        BUCKET,
+        objectKey,
+        CACHEABLE_EXPIRY_SECONDS,
+        {
+            "response-content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+            "response-cache-control": "private, max-age=21600"
+        },
+        windowStart
+    );
+    return { url, expiresAt: new Date(windowStart.getTime() + CACHEABLE_EXPIRY_SECONDS * 1000) };
+};

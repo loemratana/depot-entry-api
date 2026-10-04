@@ -6,6 +6,19 @@ import { backfillSaleNameKeys } from "./modules/sale/sale.model.js";
 import { ensureRbac } from "./modules/rbac/rbac.service.js";
 import { backfillProductShortNames } from "./modules/stock/product.model.js";
 import { completePendingStockReports } from "./modules/submission/submission.service.js";
+import { cleanupStagedPhotos } from "./modules/submission/stagedPhoto.service.js";
+
+const STAGED_PHOTO_CLEANUP_MS = 60 * 60 * 1000;
+
+/** Removes uploaded photos whose form was never submitted (they expire after a day) */
+const runStagedPhotoCleanup = async () => {
+    try {
+        const removed = await cleanupStagedPhotos();
+        if (removed) console.log(`Removed ${removed} unused uploaded photo(s)`);
+    } catch (error) {
+        console.error("Uploaded photo clean-up failed:", error.message);
+    }
+};
 
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
@@ -70,6 +83,10 @@ const start = async () => {
         } catch (error) {
             console.error("MinIO unavailable, file uploads will fail until it is reachable:", error.message);
         }
+
+        // Photos uploaded for forms that were never submitted
+        void runStagedPhotoCleanup();
+        setInterval(runStagedPhotoCleanup, STAGED_PHOTO_CLEANUP_MS).unref();
 
         server = app.listen(config.port, () => {
             console.log(`Server running on port ${config.port} (${config.nodeEnv})`);

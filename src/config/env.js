@@ -57,9 +57,6 @@ const schema = z
         DB_QUERY_TIMEOUT_MS: int(15000, { min: 100 }),
         DB_EXPORT_QUERY_TIMEOUT_MS: int(120000, { min: 100 }),
 
-        PUBLIC_SUBMISSION_RATE_LIMIT_WINDOW_MINUTES: int(15, { min: 1 }),
-        PUBLIC_SUBMISSION_RATE_LIMIT_MAX: int(20, { min: 1 }),
-        PUBLIC_API_RATE_LIMIT_MAX: int(300, { min: 1 }),
         LOGIN_RATE_LIMIT_MAX: int(10, { min: 1 }),
         TRUST_PROXY: z.string().default("false"),
 
@@ -158,9 +155,6 @@ const config = Object.freeze({
     },
 
     rateLimit: {
-        submissionWindowMs: env.PUBLIC_SUBMISSION_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000,
-        submissionMax: env.PUBLIC_SUBMISSION_RATE_LIMIT_MAX,
-        publicApiMax: env.PUBLIC_API_RATE_LIMIT_MAX,
         loginMax: env.LOGIN_RATE_LIMIT_MAX
     },
 

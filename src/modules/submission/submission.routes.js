@@ -1,8 +1,11 @@
 import { Router } from "express";
 import validate from "../../middleware/validate.middleware.js";
 import { requirePermission } from "../../middleware/auth.middleware.js";
-import { submissionLimiter } from "../../middleware/rateLimit.middleware.js";
-import { uploadSubmissionFiles, uploadSubmissionWithSitePhotos } from "../../middleware/upload.middleware.js";
+import {
+    uploadStagedPhoto,
+    uploadSubmissionFiles,
+    uploadSubmissionWithSitePhotos
+} from "../../middleware/upload.middleware.js";
 import {
     createSubmissionSchema,
     listSubmissionsSchema,
@@ -16,11 +19,13 @@ import exportRoutes from "../export/export.routes.js";
 export const publicSubmissionRoutes = Router();
 publicSubmissionRoutes.post(
     "/",
-    submissionLimiter,
     uploadSubmissionWithSitePhotos,
     validate(createSubmissionSchema),
     submissionController.createSubmission
 );
+
+// A photo uploaded while the form is being filled in; Submit then sends only its uploadId
+publicSubmissionRoutes.post("/photos", uploadStagedPhoto, submissionController.stageSubmissionPhoto);
 
 export const adminSubmissionRoutes = Router();
 // Permissions are checked before any file is received
@@ -32,6 +37,12 @@ adminSubmissionRoutes.post(
     uploadSubmissionWithSitePhotos,
     validate(createSubmissionSchema),
     submissionController.adminCreateSubmission
+);
+adminSubmissionRoutes.post(
+    "/photos",
+    requirePermission("outlets.create"),
+    uploadStagedPhoto,
+    submissionController.adminStageSubmissionPhoto
 );
 // Registered before /:id so "export" is not parsed as an id
 adminSubmissionRoutes.use("/export", requirePermission("outlets.export"), exportRoutes);

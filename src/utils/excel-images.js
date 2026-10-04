@@ -6,6 +6,9 @@ export const EMBEDDABLE = { "image/jpeg": "jpeg", "image/png": "png" };
 /** Downloads at once per export */
 export const DOWNLOAD_CONCURRENCY = 6;
 
+/** Size counted against the export image limit before a picture is loaded (previews are smaller) */
+export const PLANNED_PICTURE_BYTES = 64 * 1024;
+
 // Thumbnail box per cell, in pixels; rows and photo columns are sized to fit it
 export const THUMB_WIDTH = 110;
 export const THUMB_HEIGHT = 80;
@@ -60,9 +63,17 @@ export const mapWithLimit = async (items, limit, worker) => {
     return results;
 };
 
-/** Places a thumbnail inside one cell (zero-based column, 1-based row number) */
-export const addThumbnail = (workbook, sheet, { buffer, mimeType, col, rowNumber }) => {
-    const imageId = workbook.addImage({ buffer, extension: EMBEDDABLE[mimeType] });
+/**
+ * Places a thumbnail inside one cell (zero-based column, 1-based row number).
+ * Pass the same `imageIds` map for a picture shown on several rows, so the
+ * file holds it once.
+ */
+export const addThumbnail = (workbook, sheet, { buffer, mimeType, col, rowNumber, imageIds }) => {
+    let imageId = imageIds?.get(buffer);
+    if (imageId === undefined) {
+        imageId = workbook.addImage({ buffer, extension: EMBEDDABLE[mimeType] });
+        imageIds?.set(buffer, imageId);
+    }
     const { width, height } = fitThumbnail(imageSize(buffer));
     sheet.addImage(imageId, {
         // Small offsets keep the picture inside its cell borders

@@ -68,8 +68,7 @@ const location = (label) => ({
                     data: [{ ...PROVINCE, code: "12" }]
                 })
             },
-            400: response("ValidationError"),
-            429: response("TooManyRequests")
+            400: response("ValidationError")
         }
     }
 });
@@ -162,6 +161,39 @@ const swaggerSpec = {
             }
         },
 
+        "/public/submissions/photos": {
+            post: {
+                tags: ["Public – Submissions"],
+                summary: "Upload one site photo before submitting",
+                description:
+                    "Lets the form upload each photo while the user is still filling it in. Returns an uploadId to list in " +
+                    "`stagedPhotos` on Submit. JPG, PNG or WebP only (verified by content), up to " +
+                    `${config.upload.maxFileSizeMb} MB. Photos not used within 24 hours are deleted. ` +
+                    "Admins use `POST /admin/submissions/photos` (needs outlets.create).",
+                requestBody: {
+                    required: true,
+                    content: {
+                        "multipart/form-data": {
+                            schema: { type: "object", required: ["photo"], properties: { photo: { type: "string", format: "binary" } } }
+                        }
+                    }
+                },
+                responses: {
+                    201: {
+                        description: "Stored; use the uploadId on Submit",
+                        content: json(
+                            success({ type: "object", properties: { uploadId: { type: "string" }, expiresAt: { type: "string", format: "date-time" } } }),
+                            { success: true, message: "Photo uploaded", data: { uploadId: "q3Zb8xK2mN5pR7tV9wY1aC4eG6iL0oS3", expiresAt: "2026-10-05T08:00:00.000Z" } }
+                        )
+                    },
+                    400: response("ValidationError"),
+                    413: response("FileTooLarge"),
+                    415: response("UnsupportedFileType"),
+                    503: response("ServiceUnavailable")
+                }
+            }
+        },
+
         "/public/submissions": {
             post: {
                 tags: ["Public – Submissions"],
@@ -177,7 +209,9 @@ const swaggerSpec = {
                     "(JPG, PNG or WebP) and one `sitePhotoMeta` JSON field listing the GPS of every photo by the same photoId. " +
                     "Photos and GPS entries are matched by photoId, never by order; each photo needs exactly one entry. " +
                     "Site photos count toward the file limit and alone satisfy the one-file minimum. " +
-                    "GPS is reported by the browser and is not verified evidence.",
+                    "GPS is reported by the browser and is not verified evidence.\n\n" +
+                    "**Photos uploaded earlier (optional):** a photo already sent to `POST /public/submissions/photos` is attached " +
+                    "by listing it in `stagedPhotos`; its GPS goes in `sitePhotoMeta` like any photo. Each uploadId works once.",
                 parameters: [
                     {
                         name: "Idempotency-Key",
@@ -228,6 +262,11 @@ const swaggerSpec = {
                                                 capturedAt: "2026-09-29T05:40:00.000Z"
                                             }
                                         ])
+                                    },
+                                    stagedPhotos: {
+                                        type: "string",
+                                        description: "JSON array of { photoId, uploadId } for photos uploaded earlier",
+                                        example: JSON.stringify([{ photoId: "3f1c9a4e7b2d4c6e8a0b1c2d3e4f5a6b", uploadId: "q3Zb8xK2mN5pR7tV9wY1aC4eG6iL0oS3" }])
                                     }
                                 }
                             },
@@ -276,7 +315,6 @@ const swaggerSpec = {
                     },
                     413: response("FileTooLarge"),
                     415: response("UnsupportedFileType"),
-                    429: response("TooManyRequests"),
                     503: response("ServiceUnavailable")
                 }
             }
@@ -289,7 +327,7 @@ const swaggerSpec = {
                 description:
                     "One point per site photo with GPS, oldest capture first (the order of the optional capture-sequence line). " +
                     "Photos without GPS, including all older submissions, are left out. Dates filter by submission date, as on the outlet list. " +
-                    "`photoUrl` is a short-lived presigned URL. At most 2000 points are returned; when there are more, `message` says so.",
+                    "`photoUrl` (full photo) and `thumbnailUrl` (160 px preview for the marker; null until it has been made) are presigned links that stay the same for 6 hours, so browsers can cache the images. At most 2000 points are returned; when there are more, `message` says so.",
                 security: [{ bearerAuth: [] }],
                 parameters: [
                     ...filterParams.filter((p) => ["provinceId", "districtId", "communeId", "dateFrom", "dateTo"].includes(p.name)),
@@ -319,7 +357,8 @@ const swaggerSpec = {
                                     capturedAt: "2026-09-29T05:40:00.000Z",
                                     submittedAt: "2026-09-29T05:41:10.000Z",
                                     photoUrl: "http://localhost:9000/client-documents/submissions/66f7.../3f1c....jpg?X-Amz-Algorithm=...",
-                                    photoUrlExpiresAt: "2026-09-29T05:56:10.000Z"
+                                    photoUrlExpiresAt: "2026-09-29T12:00:00.000Z",
+                                    thumbnailUrl: "http://localhost:9000/client-documents/thumbnails/submissions/66f7.../3f1c....jpg?X-Amz-Algorithm=..."
                                 }
                             ]
                         })

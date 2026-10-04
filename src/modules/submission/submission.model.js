@@ -27,7 +27,11 @@ const fileSchema = new mongoose.Schema(
         photoId: { type: String, default: undefined },
         location: { type: pointSchema, default: undefined },
         accuracy: { type: Number, default: undefined },
-        capturedAt: { type: Date, default: undefined }
+        capturedAt: { type: Date, default: undefined },
+        // Small preview for the outlet map, made the first time the map needs it
+        thumbnailKey: { type: String, default: undefined },
+        // Small picture for Excel exports, made the first time an export needs it
+        previewKey: { type: String, default: undefined }
     },
     { _id: true }
 );

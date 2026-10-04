@@ -6,15 +6,15 @@ import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import { buildPagination, escapeRegex, getPagination } from "../../utils/pagination.js";
 import {
     DOWNLOAD_CONCURRENCY,
-    EMBEDDABLE,
     PHOTO_COLUMN_WIDTH,
+    PLANNED_PICTURE_BYTES,
     COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
-    downloadObject,
     mapWithLimit,
     setCoordinates
 } from "../../utils/excel-images.js";
+import { isPicture, loadExportPicture } from "../export/exportPicture.service.js";
 import { Submission } from "../submission/submission.model.js";
 import { Brand } from "./brand.model.js";
 import { logoPath } from "./catalog.service.js";
@@ -158,22 +158,18 @@ export const stockExportFileName = () => `stock-reports-${businessDate()}.xlsx`;
 
 const bilingual = (nameKh, nameEn) => (nameEn && nameEn !== nameKh ? `${nameKh} (${nameEn})` : nameKh);
 
-/**
- * The outlet's picture for the export: its first site photo (taken with GPS on
- * the form), otherwise its first JPEG/PNG file; null when it has none.
- */
-const pickPicture = (files = []) => {
-    const embeddable = files.filter((file) => EMBEDDABLE[file.mimeType]);
-    return embeddable.find((file) => file.photoId) ?? embeddable[0] ?? null;
-};
+/** Same as the outlet export: up to 5 photos per outlet, one column each */
+const MAX_PHOTO_COLUMNS = 5;
 
 /**
  * One row per report: No., outlet and location, one column per product and the
- * quantities its brand counts, the outlet's picture, and its GPS coordinates
- * in the last column. Product columns
- * follow the current catalog order; products only found in older reports are
- * appended. Pictures are held in memory until the file is written, so their
- * total size is capped (EXPORT_MAX_IMAGE_MB); past the cap the cell says so.
+ * quantities its brand counts, the outlet's photos (Photo 1, Photo 2, … like
+ * the outlet export), and its GPS coordinates in the last column. Product
+ * columns follow the current catalog order; products only found in older
+ * reports are appended. Photos are small previews, loaded once per outlet even
+ * when it has several reports. They are held in memory until the file is
+ * written, so their total size is capped (EXPORT_MAX_IMAGE_MB); past the cap
+ * the cell says so.
  */
 export const buildStockExport = async (query) => {
     const catalog = await listActiveCatalog();
@@ -200,12 +196,14 @@ export const buildStockExport = async (query) => {
         }
     }
 
-    // One picture per outlet, planned within the memory budget before downloading
+    // The outlets' photos, planned within the memory budget before loading
     const outletIds = [...new Set(docs.map((doc) => doc.outletId.toString()))];
     const outlets = await Submission.find(
         { _id: { $in: outletIds } },
         {
+            "files._id": 1,
             "files.objectKey": 1,
+            "files.previewKey": 1,
             "files.mimeType": 1,
             "files.size": 1,
             "files.photoId": 1,
@@ -215,32 +213,36 @@ export const buildStockExport = async (query) => {
     )
         .maxTimeMS(config.exportQueryTimeoutMs)
         .lean();
-    const pictureOf = new Map(outlets.map((outlet) => [outlet._id.toString(), pickPicture(outlet.files)]));
     const filesOf = new Map(outlets.map((outlet) => [outlet._id.toString(), outlet.files ?? []]));
+    // Site photos (taken with GPS on the form) first, then other pictures
+    const photosOf = new Map(
+        outlets.map((outlet) => {
+            const pictures = (outlet.files ?? []).filter(isPicture);
+            const ordered = [...pictures.filter((file) => file.photoId), ...pictures.filter((file) => !file.photoId)];
+            return [outlet._id.toString(), ordered.slice(0, MAX_PHOTO_COLUMNS)];
+        })
+    );
 
     const budget = config.export.maxImageBytes;
     let planned = 0;
     let budgetReached = false;
-    const toEmbed = new Map(); // outletId → its picture (downloaded once per outlet)
+    const toLoad = []; // { outletId, file }, each outlet's photos loaded once
     for (const id of outletIds) {
-        const file = pictureOf.get(id);
-        if (!file) continue;
-        if (planned + file.size > budget) {
-            budgetReached = true;
-            continue;
+        for (const file of photosOf.get(id) ?? []) {
+            const size = Math.min(file.size, PLANNED_PICTURE_BYTES);
+            if (planned + size > budget) {
+                budgetReached = true;
+                continue;
+            }
+            planned += size;
+            toLoad.push({ outletId: id, file });
         }
-        planned += file.size;
-        toEmbed.set(id, file);
     }
-    const toDownload = [...toEmbed.entries()];
-    const buffers = await mapWithLimit(toDownload, DOWNLOAD_CONCURRENCY, async ([, file]) => {
-        try {
-            return await downloadObject(file.objectKey);
-        } catch {
-            return null;
-        }
-    });
-    const pictureBuffer = new Map(toDownload.map(([id], index) => [id, buffers[index]]));
+    const loaded = await mapWithLimit(toLoad, DOWNLOAD_CONCURRENCY, ({ outletId, file }) =>
+        loadExportPicture(outletId, file)
+    );
+    const pictureOf = new Map(toLoad.map(({ file }, index) => [file._id.toString(), loaded[index]]));
+    const photoColumns = Math.max(1, ...outletIds.map((id) => photosOf.get(id)?.length ?? 0));
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Outlet Management";
@@ -261,15 +263,21 @@ export const buildStockExport = async (query) => {
                 width: 18
             }))
         ),
-        { header: "Picture", key: "picture", width: PHOTO_COLUMN_WIDTH },
+        ...Array.from({ length: photoColumns }, (_, i) => ({
+            header: `Photo ${i + 1}`,
+            key: `photo${i + 1}`,
+            width: PHOTO_COLUMN_WIDTH
+        })),
         { header: "Coordinates", key: "coordinates", width: COORDINATES_COLUMN_WIDTH }
     ];
     const header = sheet.getRow(1);
     header.font = { bold: true };
     header.alignment = { wrapText: true, vertical: "middle" };
     header.height = 45;
-    // Zero-based index of "Picture" for image anchors (second to last, before Coordinates)
-    const PICTURE_COLUMN = sheet.columns.length - 2;
+    // Zero-based index of "Photo 1" for image anchors (the photos sit just before Coordinates)
+    const FIRST_PHOTO_COLUMN = sheet.columns.length - 1 - photoColumns;
+    // An outlet with several reports shows the same photos; the file holds each once
+    const imageIds = new Map();
 
     docs.forEach((doc, index) => {
         const outletId = doc.outletId.toString();
@@ -290,18 +298,29 @@ export const buildStockExport = async (query) => {
         row.getCell("no").alignment = { vertical: "middle", horizontal: "center" };
         setCoordinates(row.getCell("coordinates"), filesOf.get(outletId));
 
-        const file = toEmbed.get(outletId);
-        const buffer = pictureBuffer.get(outletId);
-        if (file && buffer) {
-            addThumbnail(workbook, sheet, { buffer, mimeType: file.mimeType, col: PICTURE_COLUMN, rowNumber: row.number });
+        const photos = photosOf.get(outletId) ?? [];
+        if (photos.length === 0) row.getCell("photo1").value = "No picture";
+        photos.forEach((file, i) => {
+            const id = file._id.toString();
+            const cell = row.getCell(`photo${i + 1}`);
+            if (!pictureOf.has(id)) {
+                cell.value = "(not shown: size limit)";
+                return;
+            }
+            const picture = pictureOf.get(id);
+            if (!picture) {
+                cell.value = "(unavailable)";
+                return;
+            }
+            addThumbnail(workbook, sheet, {
+                buffer: picture.buffer,
+                mimeType: picture.mimeType,
+                col: FIRST_PHOTO_COLUMN + i,
+                rowNumber: row.number,
+                imageIds
+            });
             row.height = ROW_HEIGHT_POINTS;
-        } else if (file) {
-            row.getCell("picture").value = "(unavailable)";
-        } else if (pictureOf.get(outletId)) {
-            row.getCell("picture").value = "(not shown: size limit)";
-        } else {
-            row.getCell("picture").value = "No picture";
-        }
+        });
     });
 
     sheet.autoFilter = { from: "A1", to: { row: 1, column: sheet.columns.length } };

@@ -234,7 +234,7 @@ describe("admin stock reports", () => {
         assert.equal((await api("/admin/stock/reports?dateFrom=2020-01-01&dateTo=2020-01-02", { token })).body.pagination.total, 0);
     });
 
-    test("Excel export: No. first, one column per product and measure, Picture last", async () => {
+    test("Excel export: No. first, one column per product and measure, photos last", async () => {
         const res = await api("/admin/stock/reports/export", { token });
         assert.equal(res.status, 200);
         assert.match(res.headers.get("content-disposition"), /stock-reports-\d{4}-\d{2}-\d{2}\.xlsx/);
@@ -250,7 +250,7 @@ describe("admin stock reports", () => {
         // Wedding beer has a cases column only
         assert.equal(headers.filter((h) => /WEDDING/.test(h)).length, 2);
         assert.equal(headers.filter((h) => /ចំនួនកំប៉ុង|ចំនួនទឹកលុយគុល្លា|· ចំនួនក្រវិល$/.test(h)).length, 0);
-        assert.deepEqual(headers.slice(-2), ["Picture", "Coordinates"]);
+        assert.deepEqual(headers.slice(-2), ["Photo 1", "Coordinates"]);
         // Each outlet's site photo has GPS: coordinates link to Google Maps
         assert.equal(sheet.getRow(2).getCell(headers.length).value.text, "11.556400, 104.928200");
         assert.equal(headers.length, 8 + 3 * 4 + 2 * 1);
@@ -258,7 +258,7 @@ describe("admin stock reports", () => {
 
         // Rows are numbered 1..n in the first column
         assert.deepEqual([sheet.getRow(2).getCell(1).value, sheet.getRow(3).getCell(1).value], [1, 2]);
-        // Each outlet's photo is embedded in the Picture column (second to last), one per row
+        // Each outlet's photo is embedded in the Photo 1 column (second to last), one per row
         const images = sheet.getImages();
         assert.equal(images.length, 2);
         assert.ok(images.every((image) => image.range.tl.nativeCol === headers.length - 2));

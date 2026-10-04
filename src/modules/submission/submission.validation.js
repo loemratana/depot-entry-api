@@ -43,22 +43,47 @@ const sitePhotoGpsSchema = z.object({
         })
 });
 
-// Multipart sends the GPS list as one JSON string
+// Multipart sends lists as one JSON string
+const parseJsonField = (value) => {
+    if (value === undefined || value === "") return undefined;
+    if (typeof value !== "string") return value;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return value; // reported as "expected array"
+    }
+};
+
 const sitePhotoMeta = z.preprocess(
-    (value) => {
-        if (value === undefined || value === "") return undefined;
-        if (typeof value !== "string") return value;
-        try {
-            return JSON.parse(value);
-        } catch {
-            return value; // reported as "expected array" below
-        }
-    },
+    parseJsonField,
     z
         .array(sitePhotoGpsSchema)
         .max(50)
         .refine((items) => new Set(items.map((i) => i.photoId)).size === items.length, {
             message: "Each photoId may appear only once"
+        })
+        .optional()
+);
+
+export const STAGED_UPLOAD_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
+
+// Photos uploaded while the form was being filled in: only their uploadId is sent.
+// Their GPS is in sitePhotoMeta, matched by photoId like the other photos.
+const stagedPhotos = z.preprocess(
+    parseJsonField,
+    z
+        .array(
+            z.object({
+                photoId: z.string({ error: "photoId is required" }).regex(PHOTO_ID_PATTERN, "Invalid photoId"),
+                uploadId: z.string({ error: "uploadId is required" }).regex(STAGED_UPLOAD_ID_PATTERN, "Invalid uploadId")
+            })
+        )
+        .max(50)
+        .refine((items) => new Set(items.map((i) => i.photoId)).size === items.length, {
+            message: "Each photoId may appear only once"
+        })
+        .refine((items) => new Set(items.map((i) => i.uploadId)).size === items.length, {
+            message: "Each uploadId may appear only once"
         })
         .optional()
 );
@@ -107,7 +132,8 @@ export const createSubmissionSchema = {
             communeName: typedLocationName("Commune"),
             ...saleGbFields,
             stockItems,
-            sitePhotoMeta
+            sitePhotoMeta,
+            stagedPhotos
         })
         .superRefine(
             (body, ctx) => {

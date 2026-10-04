@@ -3,6 +3,7 @@ import asyncHandler from "../../utils/asyncHandler.js";
 import { sendSuccess } from "../../utils/response.js";
 import { IDEMPOTENCY_KEY_PATTERN } from "./submission.validation.js";
 import * as submissionService from "./submission.service.js";
+import { stagePhoto } from "./stagedPhoto.service.js";
 
 const readIdempotencyKey = (req) => {
     const key = req.get("idempotency-key");
@@ -90,3 +91,12 @@ export const removeFile = asyncHandler(async (req, res) => {
     const data = await submissionService.removeSubmissionFile(id, fileId);
     sendSuccess(res, { message: "File removed", data });
 });
+
+/** One site photo uploaded while the form is being filled in; Submit sends its uploadId */
+const respondStaged = async (req, res, uploadedBy) => {
+    const data = await stagePhoto(req.file, { uploadedBy });
+    sendSuccess(res, { statusCode: 201, message: "Photo uploaded", data });
+};
+
+export const stageSubmissionPhoto = asyncHandler((req, res) => respondStaged(req, res, null));
+export const adminStageSubmissionPhoto = asyncHandler((req, res) => respondStaged(req, res, req.admin._id));

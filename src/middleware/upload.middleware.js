@@ -155,6 +155,32 @@ export const uploadSubmissionWithSitePhotos = (req, res, next) => {
     });
 };
 
+// ---------- One site photo, uploaded before the form is submitted ----------
+
+/** A single image in the "photo" field; req.file is its temp file */
+export const uploadStagedPhoto = (req, res, next) => {
+    multer({
+        storage,
+        fileFilter: (req, file, cb) => {
+            if (SITE_PHOTO_MIME_TYPES.has(file.mimetype?.toLowerCase())) return cb(null, true);
+            cb(
+                new ApiError(415, "Unsupported file type", [
+                    { field: "photo", message: "A site photo must be a JPG, PNG or WebP image" }
+                ])
+            );
+        },
+        limits: { fileSize: config.upload.maxFileSizeBytes, files: 1, fields: 0, parts: 1 }
+    }).single("photo")(req, res, (err) => {
+        if (req.file) {
+            req.file.originalname = decodeOriginalName(req.file.originalname);
+            res.on("close", () => cleanupTempFiles([req.file]));
+        }
+        if (err) return next(err);
+        if (!req.file) return next(ApiError.validation([{ field: "photo", message: "Choose a photo to upload" }]));
+        next();
+    });
+};
+
 // ---------- Admin brand logo upload ----------
 
 export const LOGO_MAX_BYTES = 2 * 1024 * 1024;

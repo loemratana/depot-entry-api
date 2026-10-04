@@ -3,15 +3,15 @@ import config from "../../config/env.js";
 import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import {
     DOWNLOAD_CONCURRENCY,
-    EMBEDDABLE,
     PHOTO_COLUMN_WIDTH,
+    PLANNED_PICTURE_BYTES,
     COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
-    downloadObject,
     mapWithLimit,
     setCoordinates
 } from "../../utils/excel-images.js";
+import { isPicture, loadExportPicture } from "./exportPicture.service.js";
 import { Submission } from "../submission/submission.model.js";
 import { buildSort, buildSubmissionFilter } from "../submission/submission.service.js";
 
@@ -35,8 +35,10 @@ const EXPORT_PROJECTION = {
     communeNameKh: 1,
     communeNameEn: 1,
     submittedAt: 1,
+    "files._id": 1,
     "files.originalName": 1,
     "files.objectKey": 1,
+    "files.previewKey": 1,
     "files.mimeType": 1,
     "files.size": 1,
     "files.location": 1
@@ -51,9 +53,10 @@ export const exportFileName = () => `client-submissions-${businessDate()}.xlsx`;
 export { imageSize } from "../../utils/excel-images.js";
 
 /**
- * Builds the export workbook with photos embedded next to each client.
- * Images are held in memory until the file is written, so the total embedded
- * size is capped (EXPORT_MAX_IMAGE_MB); past the cap, photos are listed by name.
+ * Builds the export workbook with photos embedded next to each client, as
+ * small previews (see exportPicture.service). Images are held in memory until
+ * the file is written, so the total embedded size is capped
+ * (EXPORT_MAX_IMAGE_MB); past the cap, photos are listed by name.
  */
 export const buildSubmissionsExport = async (query) => {
     const docs = await Submission.find(buildSubmissionFilter(query), EXPORT_PROJECTION)
@@ -69,10 +72,11 @@ export const buildSubmissionsExport = async (query) => {
         const photos = [];
         const others = [];
         for (const file of doc.files ?? []) {
-            const embeddable = EMBEDDABLE[file.mimeType] && photos.length < MAX_PHOTO_COLUMNS;
-            if (embeddable && planned + file.size <= budget) {
+            const embeddable = isPicture(file) && photos.length < MAX_PHOTO_COLUMNS;
+            const size = Math.min(file.size, PLANNED_PICTURE_BYTES);
+            if (embeddable && planned + size <= budget) {
                 photos.push(file);
-                planned += file.size;
+                planned += size;
             } else {
                 if (embeddable) budgetReached = true;
                 others.push(file.originalName);
@@ -84,14 +88,10 @@ export const buildSubmissionsExport = async (query) => {
     const photoColumns = Math.max(0, ...plans.map((plan) => plan.photos.length));
 
     // Download all planned photos a few at a time; a missing object is listed by name instead
-    const downloads = plans.flatMap((plan, row) => plan.photos.map((file) => ({ row, file })));
-    const buffers = await mapWithLimit(downloads, DOWNLOAD_CONCURRENCY, async ({ file }) => {
-        try {
-            return await downloadObject(file.objectKey);
-        } catch {
-            return null;
-        }
-    });
+    const downloads = plans.flatMap((plan) => plan.photos.map((file) => ({ doc: plan.doc, file })));
+    const pictures = await mapWithLimit(downloads, DOWNLOAD_CONCURRENCY, ({ doc, file }) =>
+        loadExportPicture(doc._id, file)
+    );
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Client Management System";
@@ -130,14 +130,14 @@ export const buildSubmissionsExport = async (query) => {
         const unavailable = [];
         let embedded = 0;
         for (const file of photos) {
-            const buffer = buffers[downloadIndex++];
-            if (!buffer) {
+            const picture = pictures[downloadIndex++];
+            if (!picture) {
                 unavailable.push(`${file.originalName} (unavailable)`);
                 continue;
             }
             addThumbnail(workbook, sheet, {
-                buffer,
-                mimeType: file.mimeType,
+                buffer: picture.buffer,
+                mimeType: picture.mimeType,
                 col: firstPhotoColumn + embedded,
                 rowNumber: row.number
             });

@@ -42,8 +42,7 @@ All variables are documented in [.env.example](.env.example) and validated at st
 | `MINIO_*` | MinIO connection and bucket. Access/secret key are also the MinIO root credentials in Docker Compose |
 | `FILE_URL_EXPIRY_SECONDS` | Lifetime of document links shown to admins (default 900) |
 | `MAX_FILES_PER_SUBMISSION`, `MAX_FILE_SIZE_MB`, `ALLOWED_FILE_TYPES` | Upload limits |
-| `PUBLIC_SUBMISSION_RATE_LIMIT_WINDOW_MINUTES`, `PUBLIC_SUBMISSION_RATE_LIMIT_MAX` | Submission rate limit per IP |
-| `PUBLIC_API_RATE_LIMIT_MAX`, `LOGIN_RATE_LIMIT_MAX` | Per-IP limits for all public routes and failed logins (per 15 min) |
+| `LOGIN_RATE_LIMIT_MAX` | Failed logins allowed per IP per 15 min (public routes and submissions have no rate limit) |
 | `SWAGGER_ENABLED` | Serve `/api/docs` (defaults to on outside production) |
 
 Generate a JWT secret:
@@ -279,7 +278,7 @@ Free-text search on names uses a regex, which scans the matching filter range. T
 ## Security notes
 
 - Helmet headers, CORS limited to `CORS_ORIGIN`, and JSON/urlencoded bodies capped at 1 MB.
-- Rate limits: submissions per IP, all public routes per IP, and failed logins per IP. Login responses take the same time for unknown emails and wrong passwords.
+- Rate limit: failed logins per IP only; public routes and outlet submissions are not rate limited. Login responses take the same time for unknown emails and wrong passwords.
 - The limiter's in-memory store is per process. Everything else is stateless, so to run several instances, switch the limiter to a shared store (e.g. MongoDB).
 - Logs contain method, URL, status and timing only: no bodies, tokens or secrets. Stack traces are only returned outside production.
 - MongoDB and MinIO ports are bound to `127.0.0.1`.
