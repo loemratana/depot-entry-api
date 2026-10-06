@@ -9,6 +9,7 @@ import {
 import {
     createSubmissionSchema,
     listSubmissionsSchema,
+    outletStockSchema,
     submissionFileSchema,
     submissionIdSchema,
     updateSubmissionSchema
@@ -49,6 +50,8 @@ adminSubmissionRoutes.use("/export", requirePermission("outlets.export"), export
 adminSubmissionRoutes.get("/:id", requirePermission("outlets.view"), validate(submissionIdSchema), submissionController.getSubmission);
 adminSubmissionRoutes.patch("/:id", requirePermission("outlets.update"), validate(updateSubmissionSchema), submissionController.updateSubmission);
 adminSubmissionRoutes.delete("/:id", requirePermission("outlets.delete"), validate(submissionIdSchema), submissionController.deleteSubmission);
+// Edit the outlet's stock, or add it again after it was deleted
+adminSubmissionRoutes.put("/:id/stock", requirePermission("stock.update"), validate(outletStockSchema), submissionController.setOutletStock);
 // The id is validated before files are received, so a bad id never uploads anything
 adminSubmissionRoutes.post(
     "/:id/files",

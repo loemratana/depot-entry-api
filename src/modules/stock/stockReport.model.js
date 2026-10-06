@@ -43,6 +43,8 @@ const stockReportSchema = new mongoose.Schema(
         reportedAt: { type: Date, required: true, default: Date.now },
         // null when sent from the public form
         submittedBy: { type: ObjectId, ref: "Admin", default: null },
+        // The admin who last changed the quantities from the Outlet page (null: never)
+        updatedBy: { type: ObjectId, ref: "Admin", default: null },
         // Client-supplied Idempotency-Key header; never returned by the API
         idempotencyKey: { type: String, default: undefined, select: false }
     },

@@ -8,7 +8,7 @@ import { buildPagination, escapeRegex, getPagination } from "../../utils/paginat
 import { normalizePhone } from "../../utils/validators.js";
 import { resolveLocationSelection } from "../location/location.service.js";
 import { resolveSaleSelection } from "../sale/sale.service.js";
-import { buildStockItems } from "../stock/stock.service.js";
+import { buildStockItems, getStockReport } from "../stock/stock.service.js";
 import { StockReport } from "../stock/stockReport.model.js";
 import { validateSubmissionFiles } from "../upload/file.validation.js";
 import { removeUploadedObjects, uploadSubmissionFiles } from "../upload/upload.service.js";
@@ -60,6 +60,85 @@ const completePendingStock = async (submission) => {
 const replay = async (existing) => {
     await completePendingStock(existing);
     return { submissionNo: existing.submissionNo, replayed: true };
+};
+
+const OUTLET_COPY_FIELDS = [
+    "provinceId",
+    "provinceNameKh",
+    "provinceNameEn",
+    "districtId",
+    "districtNameKh",
+    "districtNameEn",
+    "communeId",
+    "communeNameKh",
+    "communeNameEn"
+];
+
+/**
+ * Copies the outlet's name and location, as saved now, into its stock reports.
+ * Read back from the database (not taken from the request), so when two edits
+ * of the same outlet overlap, the reports end up matching whichever was saved
+ * last. If this fails, the periodic sync below fixes it.
+ */
+const copyOutletToStockReports = async (outletId) => {
+    const outlet = await Submission.findById(outletId)
+        .select(["clientName", ...OUTLET_COPY_FIELDS].join(" "))
+        .lean();
+    if (!outlet) return;
+    await StockReport.updateMany(
+        { outletId: outlet._id },
+        {
+            $set: {
+                outletName: outlet.clientName,
+                ...Object.fromEntries(OUTLET_COPY_FIELDS.map((f) => [f, outlet[f] ?? (f.endsWith("Id") ? undefined : "")]).filter(([, v]) => v !== undefined))
+            }
+        }
+    );
+};
+
+/**
+ * Brings stock reports back in line with their outlet's current name and
+ * location (outlets edited before edits updated their reports). Only reports
+ * that differ are written. Run at startup; safe to run more than once.
+ */
+export const syncStockReportsWithOutlets = async () => {
+    const stale = await StockReport.aggregate([
+        { $lookup: { from: Submission.collection.name, localField: "outletId", foreignField: "_id", as: "outlet" } },
+        { $unwind: "$outlet" },
+        {
+            $match: {
+                $expr: {
+                    $or: [
+                        { $ne: ["$outletName", "$outlet.clientName"] },
+                        // A missing English name counts as empty on both sides
+                        ...OUTLET_COPY_FIELDS.map((field) => ({
+                            $ne: [{ $ifNull: [`$${field}`, ""] }, { $ifNull: [`$outlet.${field}`, ""] }]
+                        }))
+                    ]
+                }
+            }
+        },
+        { $project: { outlet: { clientName: 1, ...Object.fromEntries(OUTLET_COPY_FIELDS.map((f) => [f, 1])) } } }
+    ]).option({ maxTimeMS: config.queryTimeoutMs * 10 });
+    if (stale.length === 0) return 0;
+    await StockReport.bulkWrite(
+        stale.map(({ _id, outlet }) => ({
+            updateOne: {
+                filter: { _id },
+                update: {
+                    $set: {
+                        outletName: outlet.clientName,
+                        ...Object.fromEntries(
+                            OUTLET_COPY_FIELDS.map((f) => [f, outlet[f] ?? (f.endsWith("Id") ? undefined : "")]).filter(
+                                ([, value]) => value !== undefined
+                            )
+                        )
+                    }
+                }
+            }
+        }))
+    );
+    return stale.length;
 };
 
 /**
@@ -351,7 +430,51 @@ export const updateSubmission = async (id, changes) => {
     if (changes.saleGbId || changes.saleGbName) Object.assign($set, await resolveSaleFields(changes));
 
     await Submission.updateOne({ _id: id }, { $set });
+
+    // The outlet's stock reports keep their own copy of its name and location; keep them in step
+    if ($set.clientName !== undefined || $set.provinceId) await copyOutletToStockReports(id);
+
     return getSubmissionDetails(id);
+};
+
+/**
+ * Admin: sets an outlet's stock. Replaces the quantities of its stock report, or
+ * adds the report again when it was deleted (dated like the outlet, so the
+ * dashboards count it in the same period). Products and quantities are checked
+ * like on the outlet form; the name and location come from the outlet.
+ */
+export const setOutletStock = async (id, inputItems, { updatedBy }) => {
+    const outlet = await Submission.findById(id)
+        .select(["clientName", "submittedAt", ...OUTLET_COPY_FIELDS].join(" "))
+        .lean();
+    if (!outlet) throw ApiError.notFound("Outlet not found");
+    const items = await buildStockItems(inputItems, { fieldPrefix: "stockItems" });
+
+    const $set = {
+        items,
+        updatedBy,
+        outletName: outlet.clientName,
+        ...Object.fromEntries(
+            OUTLET_COPY_FIELDS.map((f) => [f, outlet[f] ?? (f.endsWith("Id") ? undefined : "")]).filter(([, v]) => v !== undefined)
+        )
+    };
+    // Its latest report; one added from the form or here has the outlet's own _id
+    const existing = await StockReport.findOne({ outletId: outlet._id }).sort({ reportedAt: -1 }).select("_id").lean();
+    const reportId = existing?._id ?? outlet._id;
+    const write = () =>
+        StockReport.updateOne(
+            { _id: reportId },
+            { $set, $setOnInsert: { outletId: outlet._id, reportedAt: outlet.submittedAt, submittedBy: updatedBy } },
+            { upsert: true, runValidators: true }
+        );
+    try {
+        await write();
+    } catch (error) {
+        // Two saves adding it at the same moment: the other one created it, so update it
+        if (duplicateKeyField(error) !== "_id") throw error;
+        await write();
+    }
+    return getStockReport(reportId.toString());
 };
 
 /** Adds files uploaded by an admin, each with its own upload time; total stays within the limit */

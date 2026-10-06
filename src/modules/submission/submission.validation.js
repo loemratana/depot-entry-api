@@ -120,6 +120,12 @@ const oneOf = (body, ctx, level, label) => {
     }
 };
 
+/** Admin: set an outlet's stock (adds it again when its report was deleted) */
+export const outletStockSchema = {
+    params: z.object({ id: objectId("submission id") }),
+    body: z.object({ stockItems: stockItems.refine((items) => items?.length, "Enter the outlet's stock") }).strict()
+};
+
 export const createSubmissionSchema = {
     body: z
         .object({

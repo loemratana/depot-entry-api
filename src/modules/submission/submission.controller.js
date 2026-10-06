@@ -39,6 +39,14 @@ export const createSubmission = asyncHandler(async (req, res) => {
     });
 });
 
+/** Admin: set the outlet's stock (adds it again when it was deleted) */
+export const setOutletStock = asyncHandler(async (req, res) => {
+    const data = await submissionService.setOutletStock(req.validated.params.id, req.validated.body.stockItems, {
+        updatedBy: req.admin._id
+    });
+    sendSuccess(res, { message: "Stock saved", data });
+});
+
 export const listSubmissions = asyncHandler(async (req, res) => {
     const { data, pagination } = await submissionService.listSubmissions(req.validated.query);
     sendSuccess(res, { data, pagination });

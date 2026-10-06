@@ -1,7 +1,14 @@
 import ApiError from "../../utils/ApiError.js";
 import { nameKey } from "../../utils/names.js";
 import { Admin } from "../auth/auth.model.js";
-import { DEFAULT_ROLES, PERMISSIONS, PERMISSION_GROUPS, SUPER_ADMIN_KEY, isPermission } from "./permissions.js";
+import {
+    DEFAULT_ROLES,
+    PERMISSIONS,
+    PERMISSION_ADDITIONS,
+    PERMISSION_GROUPS,
+    SUPER_ADMIN_KEY,
+    isPermission
+} from "./permissions.js";
 import { Role } from "./role.model.js";
 
 const isDuplicateKey = (error) => error?.code === 11000;
@@ -49,6 +56,13 @@ export const ensureRbac = async () => {
             if (!isDuplicateKey(error)) throw error;
             if (role.key === SUPER_ADMIN_KEY) throw error;
         }
+    }
+    // Permissions added since the roles were created: given once, never again after removal
+    for (const { permission, roles } of PERMISSION_ADDITIONS) {
+        await Role.updateMany(
+            { key: { $in: roles }, addedPermissions: { $ne: permission } },
+            { $addToSet: { permissions: permission, addedPermissions: permission } }
+        );
     }
     const superAdmin = await getSuperAdminRole();
     const { modifiedCount } = await Admin.updateMany(

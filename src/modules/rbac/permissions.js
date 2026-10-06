@@ -27,6 +27,7 @@ export const PERMISSION_GROUPS = Object.freeze([
         label: "Stock",
         permissions: [
             { key: "stock.view", label: "View stock reports" },
+            { key: "stock.update", label: "Add or edit an outlet's stock" },
             { key: "stock.delete", label: "Delete stock reports" },
             { key: "stock.export", label: "Export stock to Excel" }
         ]
@@ -74,6 +75,13 @@ export const isPermission = (key) => KNOWN.has(key);
 
 export const SUPER_ADMIN_KEY = "super_admin";
 
+/**
+ * Permissions added after the built-in roles were first created. Each is given
+ * once to these built-in roles (when they still exist); a permission removed
+ * later on the Roles page is not given back.
+ */
+export const PERMISSION_ADDITIONS = Object.freeze([{ permission: "stock.update", roles: ["manager", "staff"] }]);
+
 const without = (...excluded) => PERMISSIONS.filter((key) => !excluded.some((prefix) => key.startsWith(prefix)));
 
 /**
@@ -108,6 +116,7 @@ export const DEFAULT_ROLES = Object.freeze([
             "outlets.files",
             "map.view",
             "stock.view",
+            "stock.update",
             "catalog.view",
             "locations.view"
         ]

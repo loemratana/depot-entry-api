@@ -316,6 +316,87 @@ describe("admin stock reports", () => {
         assert.equal((await api(`/admin/stock/reports/${replay.id}`, { token })).status, 404);
     });
 
+    test("editing an outlet's name or location updates its stock reports too", async () => {
+        const created = await submitOutlet({ clientName: "Shop Rename" });
+        assert.equal(created.status, 201, JSON.stringify(created.body));
+        const outlet = await Submission.findOne({ clientName: "Shop Rename" }).lean();
+
+        const res = await api(`/admin/submissions/${outlet._id}`, {
+            method: "PATCH",
+            token,
+            json: { clientName: "Shop Renamed", provinceId: fx.p2._id, districtId: fx.d2._id, communeId: fx.c2._id }
+        });
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+
+        const report = await StockReport.findOne({ outletId: outlet._id }).lean();
+        assert.equal(report.outletName, "Shop Renamed");
+        assert.equal(String(report.provinceId), String(fx.p2._id));
+        assert.equal(String(report.districtId), String(fx.d2._id));
+        assert.equal(String(report.communeId), String(fx.c2._id));
+        assert.equal(report.provinceNameEn, fx.p2.nameEn);
+        // The stock list finds it under the new name and province
+        const listed = await api(`/admin/stock/reports?provinceId=${fx.p2._id}&search=Renamed`, { token });
+        assert.equal(listed.body.pagination.total, 1);
+
+        // A phone change alone leaves the reports as they are
+        await api(`/admin/submissions/${outlet._id}`, { method: "PATCH", token, json: { phone: "098765432" } });
+        assert.equal((await StockReport.findOne({ outletId: outlet._id }).lean()).outletName, "Shop Renamed");
+
+        await api(`/admin/submissions/${outlet._id}`, { method: "DELETE", token });
+    });
+
+    test("overlapping edits of one outlet: its stock still matches what was saved last", async () => {
+        assert.equal((await submitOutlet({ clientName: "Busy Shop" })).status, 201);
+        const outlet = await Submission.findOne({ clientName: "Busy Shop" }).lean();
+        const others = await StockReport.find({ outletId: { $ne: outlet._id } }).lean();
+
+        // 10 edits at once, alternating name and province
+        const edits = Array.from({ length: 10 }, (_, i) => {
+            const [p, d, c] = i % 2 ? [fx.p2, fx.d2, fx.c2] : [fx.p1, fx.d1, fx.c1];
+            return api(`/admin/submissions/${outlet._id}`, {
+                method: "PATCH",
+                token,
+                json: { clientName: `Busy Shop ${i}`, provinceId: p._id, districtId: d._id, communeId: c._id }
+            });
+        });
+        assert.ok((await Promise.all(edits)).every((res) => res.status === 200));
+
+        const saved = await Submission.findById(outlet._id).lean();
+        const report = await StockReport.findOne({ outletId: outlet._id }).lean();
+        assert.equal(report.outletName, saved.clientName);
+        for (const field of ["provinceId", "districtId", "communeId"]) {
+            assert.equal(String(report[field]), String(saved[field]), field);
+        }
+        assert.equal(report.provinceNameKh, saved.provinceNameKh);
+        assert.equal(report.communeNameKh, saved.communeNameKh);
+        // Quantities and other outlets' reports are untouched
+        assert.equal(report.items.length, 5);
+        assert.deepEqual(
+            (await StockReport.find({ outletId: { $ne: outlet._id } }).lean()).map((r) => [r._id, r.outletName, r.items]),
+            others.map((r) => [r._id, r.outletName, r.items])
+        );
+        await api(`/admin/submissions/${outlet._id}`, { method: "DELETE", token });
+    });
+
+    test("at start, reports of outlets edited earlier get the outlet's current name and location", async () => {
+        const { syncStockReportsWithOutlets } = await import("../src/modules/submission/submission.service.js");
+        assert.equal(await syncStockReportsWithOutlets(), 0);
+
+        // A report left with an old name and province (edited before edits updated reports)
+        const outlet = await Submission.findOne({ clientName: "Shop Alpha" }).lean();
+        await StockReport.updateOne(
+            { outletId: outlet._id },
+            { $set: { outletName: "Old Name", provinceId: fx.p2._id, provinceNameKh: "ចាស់", provinceNameEn: "Old" } }
+        );
+        assert.equal(await syncStockReportsWithOutlets(), 1);
+        const report = await StockReport.findOne({ outletId: outlet._id }).lean();
+        assert.equal(report.outletName, "Shop Alpha");
+        assert.equal(String(report.provinceId), String(outlet.provinceId));
+        assert.equal(report.provinceNameKh, outlet.provinceNameKh);
+        // Nothing left to change
+        assert.equal(await syncStockReportsWithOutlets(), 0);
+    });
+
     test("deleting an outlet also deletes its stock reports", async () => {
         const outlet = await Submission.findOne({ clientName: "Shop Alpha" }).lean();
         assert.equal(await StockReport.countDocuments({ outletId: outlet._id }), 1);

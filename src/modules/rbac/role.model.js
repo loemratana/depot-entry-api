@@ -16,7 +16,9 @@ const roleSchema = new mongoose.Schema(
             validate: [(list) => list.every(isPermission), "Unknown permission"]
         },
         // Super Admin: every permission, cannot be edited or deleted
-        isSystem: { type: Boolean, default: false }
+        isSystem: { type: Boolean, default: false },
+        // Later permissions already given to this built-in role (see PERMISSION_ADDITIONS)
+        addedPermissions: { type: [String], default: [] }
     },
     { timestamps: true }
 );

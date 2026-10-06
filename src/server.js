@@ -5,11 +5,21 @@ import { ensureBucket } from "./config/minio.js";
 import { backfillSaleNameKeys } from "./modules/sale/sale.model.js";
 import { ensureRbac } from "./modules/rbac/rbac.service.js";
 import { backfillProductShortNames } from "./modules/stock/product.model.js";
-import { completePendingStockReports } from "./modules/submission/submission.service.js";
+import { completePendingStockReports, syncStockReportsWithOutlets } from "./modules/submission/submission.service.js";
 import { cleanupStagedPhotos } from "./modules/submission/stagedPhoto.service.js";
 import { schedulePhotoBackfill } from "./modules/submission/photoDerivatives.service.js";
 
 const STAGED_PHOTO_CLEANUP_MS = 60 * 60 * 1000;
+const STOCK_REPORT_SYNC_MS = 60 * 60 * 1000;
+
+const runStockReportSync = async () => {
+    try {
+        const synced = await syncStockReportsWithOutlets();
+        if (synced) console.log(`Updated ${synced} stock report(s) to their outlet name and location`);
+    } catch (error) {
+        console.error("Could not sync stock reports with outlets:", error.message);
+    }
+};
 
 /** Removes uploaded photos whose form was never submitted (they expire after a day) */
 const runStagedPhotoCleanup = async () => {
@@ -75,6 +85,11 @@ const start = async () => {
         } catch (error) {
             console.error("Could not finish pending stock reports:", error.message);
         }
+
+        // Stock reports whose outlet name or location is out of date (normally none):
+        // at start, then hourly as a safety net for an edit interrupted half-way
+        await runStockReportSync();
+        setInterval(runStockReportSync, STOCK_REPORT_SYNC_MS).unref();
 
         // Storage problems should not stop admins from browsing data, so this is non-fatal.
         // Submissions return 503 until MinIO is reachable.
