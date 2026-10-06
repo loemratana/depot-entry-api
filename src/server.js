@@ -7,6 +7,7 @@ import { ensureRbac } from "./modules/rbac/rbac.service.js";
 import { backfillProductShortNames } from "./modules/stock/product.model.js";
 import { completePendingStockReports } from "./modules/submission/submission.service.js";
 import { cleanupStagedPhotos } from "./modules/submission/stagedPhoto.service.js";
+import { schedulePhotoBackfill } from "./modules/submission/photoDerivatives.service.js";
 
 const STAGED_PHOTO_CLEANUP_MS = 60 * 60 * 1000;
 
@@ -87,6 +88,9 @@ const start = async () => {
         // Photos uploaded for forms that were never submitted
         void runStagedPhotoCleanup();
         setInterval(runStagedPhotoCleanup, STAGED_PHOTO_CLEANUP_MS).unref();
+
+        // Export previews and map thumbnails for photos that have none yet (in the background)
+        schedulePhotoBackfill();
 
         server = app.listen(config.port, () => {
             console.log(`Server running on port ${config.port} (${config.nodeEnv})`);

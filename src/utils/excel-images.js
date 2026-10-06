@@ -6,8 +6,11 @@ export const EMBEDDABLE = { "image/jpeg": "jpeg", "image/png": "png" };
 /** Downloads at once per export */
 export const DOWNLOAD_CONCURRENCY = 6;
 
-/** Size counted against the export image limit before a picture is loaded (previews are smaller) */
+/** Size counted against the export image limit before a picture is loaded (previews are small) */
 export const PLANNED_PICTURE_BYTES = 64 * 1024;
+
+/** A photo with a preview embeds that; one without embeds its original */
+export const plannedPictureBytes = (file) => (file.previewKey ? PLANNED_PICTURE_BYTES : file.size);
 
 // Thumbnail box per cell, in pixels; rows and photo columns are sized to fit it
 export const THUMB_WIDTH = 110;

@@ -8,7 +8,14 @@ const periodRefine = [
 
 export const provinceStockQuerySchema = {
     query: z
-        .object({ dateFrom: dateFilter("dateFrom"), dateTo: dateFilter("dateTo", { endOfDay: true }) })
+        .object({
+            // A province shows its districts, a district its communes
+            provinceId: objectId("provinceId").optional(),
+            districtId: objectId("districtId").optional(),
+            communeId: objectId("communeId").optional(),
+            dateFrom: dateFilter("dateFrom"),
+            dateTo: dateFilter("dateTo", { endOfDay: true })
+        })
         .refine(...periodRefine)
 };
 

@@ -172,6 +172,18 @@ describe("admin submission list", () => {
         ]);
     });
 
+    test("date and time filters use Cambodia time; the end minute is included", async () => {
+        const numbers = async (query) =>
+            (await list(`${query}&sortOrder=asc`)).body.data.map((d) => d.submissionNo.slice(-4));
+        // Submissions are at 00:30 local time each day
+        assert.deepEqual(await numbers("?dateFrom=2026-01-03T00:30&dateTo=2026-01-04T00:30"), ["0003", "0004"]);
+        assert.deepEqual(await numbers("?dateFrom=2026-01-03T00:31&dateTo=2026-01-05T00:29"), ["0004"]);
+        // A time on one end, a whole day on the other
+        assert.deepEqual(await numbers("?dateFrom=2026-01-03T00:31&dateTo=2026-01-05"), ["0004", "0005"]);
+        assert.equal((await list("?dateFrom=2026-01-03T25:00")).status, 400);
+        assert.equal((await list("?dateFrom=2026-01-05T10:00&dateTo=2026-01-05T09:00")).status, 400);
+    });
+
     test("rejects inverted and malformed date ranges", async () => {
         assert.equal((await list("?dateFrom=2026-02-01&dateTo=2026-01-01")).status, 400);
         assert.equal((await list("?dateFrom=yesterday")).status, 400);

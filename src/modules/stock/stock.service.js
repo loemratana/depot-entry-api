@@ -7,7 +7,7 @@ import { buildPagination, escapeRegex, getPagination } from "../../utils/paginat
 import {
     DOWNLOAD_CONCURRENCY,
     PHOTO_COLUMN_WIDTH,
-    PLANNED_PICTURE_BYTES,
+    plannedPictureBytes,
     COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
@@ -229,7 +229,7 @@ export const buildStockExport = async (query) => {
     const toLoad = []; // { outletId, file }, each outlet's photos loaded once
     for (const id of outletIds) {
         for (const file of photosOf.get(id) ?? []) {
-            const size = Math.min(file.size, PLANNED_PICTURE_BYTES);
+            const size = plannedPictureBytes(file);
             if (planned + size > budget) {
                 budgetReached = true;
                 continue;

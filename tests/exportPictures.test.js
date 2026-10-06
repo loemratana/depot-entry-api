@@ -1,7 +1,7 @@
 /**
  * Pictures in the Excel exports: every photo of an outlet (stock export too,
- * like the outlet export), embedded as small previews that are made once and
- * reused by later exports.
+ * like the outlet export), embedded as small previews that a background job
+ * makes once; until then the original photo is used.
  */
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +23,7 @@ import {
 
 const { Brand } = await import("../src/modules/stock/brand.model.js");
 const { Product } = await import("../src/modules/stock/product.model.js");
+const { backfillPhotoDerivatives } = await import("../src/modules/submission/photoDerivatives.service.js");
 
 let fx;
 let token;
@@ -104,6 +105,24 @@ describe("export pictures", () => {
         assert.deepEqual(placed.filter(([row]) => row === oneRow).map(([, col]) => col), [firstPhotoCol]);
     });
 
+    test("before previews exist, exports use the originals and never make previews while you wait", async () => {
+        const { workbook } = await loadSheet("/admin/stock/reports/export", "Stock Reports");
+        // JPEGs as uploaded; the WebP photo converted so Excel can show it
+        assert.equal(workbook.model.media.filter((m) => m.type === "image").length, 4);
+        assert.deepEqual(await listBucketKeys("previews/"), []);
+    });
+
+    test("the background job makes each photo's export preview and map thumbnail once", async () => {
+        assert.equal(await backfillPhotoDerivatives(), 4);
+        const saved = await Submission.findById(three._id).lean();
+        assert.ok(saved.files.every((file) => /^previews\/submissions\/.+\.jpg$/.test(file.previewKey)));
+        assert.ok(saved.files.every((file) => /^thumbnails\/submissions\/.+\.jpg$/.test(file.thumbnailKey)));
+        assert.equal((await listBucketKeys("previews/")).length, 4);
+        assert.equal((await listBucketKeys("thumbnails/")).length, 4);
+        // Nothing left to do
+        assert.equal(await backfillPhotoDerivatives(), 0);
+    });
+
     test("pictures are small previews, not the original photos", async () => {
         const { workbook, bytes } = await loadSheet("/admin/stock/reports/export", "Stock Reports");
         const media = workbook.model.media.filter((m) => m.type === "image");
@@ -117,12 +136,8 @@ describe("export pictures", () => {
         assert.ok(bytes < originals / 10, `export ${bytes} bytes vs originals ${originals}`);
     });
 
-    test("previews are made once and kept; later exports reuse them", async () => {
-        const saved = await Submission.findById(three._id).lean();
-        assert.ok(saved.files.every((file) => /^previews\/submissions\/.+\.jpg$/.test(file.previewKey)));
+    test("later exports reuse the stored previews", async () => {
         const before = await listBucketKeys("previews/");
-        assert.equal(before.length, 4);
-
         await loadSheet("/admin/submissions/export", "Client Submissions");
         assert.deepEqual((await listBucketKeys("previews/")).sort(), before.sort());
     });

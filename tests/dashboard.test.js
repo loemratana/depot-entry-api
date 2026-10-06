@@ -166,6 +166,32 @@ describe("stock by province", () => {
         assert.deepEqual(provinces.map((p) => p.outlets), [2, 1]);
     });
 
+    test("a chosen province shows its districts, a district its communes, a commune itself", async () => {
+        const chart = async (query) => (await api(`/admin/dashboard/provinces?${query}`, { token })).body.data;
+        const rows = (data) => data.provinces.map((p) => [p.id, p.total, p.outlets]);
+
+        const all = await chart("");
+        assert.equal(all.level, "province");
+
+        const province = await chart(`provinceId=${fx.p1._id}`);
+        assert.equal(province.level, "district");
+        // Province 1 has one district; outlets A and C are there
+        assert.deepEqual(rows(province), [[fx.d1._id.toString(), 108, 2]]);
+        assert.equal(province.provinces[0].nameEn, fx.d1.nameEn);
+        assert.deepEqual(province.provinces[0].cases, [0, 105, 3]);
+
+        const district = await chart(`provinceId=${fx.p1._id}&districtId=${fx.d1._id}`);
+        assert.equal(district.level, "commune");
+        // Only active communes (and ones with stock) are listed
+        assert.deepEqual(rows(district), [[fx.c1._id.toString(), 108, 2]]);
+
+        const commune = await chart(`communeId=${fx.c2._id}`);
+        assert.equal(commune.level, "commune");
+        assert.deepEqual(rows(commune), [[fx.c2._id.toString(), 10, 1]]);
+
+        assert.equal((await api("/admin/dashboard/provinces?provinceId=nope", { token })).status, 400);
+    });
+
     test("date range applies; requires stock.view", async () => {
         const recent = (await api("/admin/dashboard/provinces?dateFrom=2026-01-01", { token })).body.data.provinces;
         assert.deepEqual(recent.map((p) => [p.nameEn, p.total]), [["Test Province Two", 10], ["Test Province One", 8], ["Empty Province", 0]]);

@@ -4,7 +4,7 @@ import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import {
     DOWNLOAD_CONCURRENCY,
     PHOTO_COLUMN_WIDTH,
-    PLANNED_PICTURE_BYTES,
+    plannedPictureBytes,
     COORDINATES_COLUMN_WIDTH,
     ROW_HEIGHT_POINTS,
     addThumbnail,
@@ -73,7 +73,7 @@ export const buildSubmissionsExport = async (query) => {
         const others = [];
         for (const file of doc.files ?? []) {
             const embeddable = isPicture(file) && photos.length < MAX_PHOTO_COLUMNS;
-            const size = Math.min(file.size, PLANNED_PICTURE_BYTES);
+            const size = plannedPictureBytes(file);
             if (embeddable && planned + size <= budget) {
                 photos.push(file);
                 planned += size;

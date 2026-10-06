@@ -19,6 +19,7 @@ import {
     finishStagedPhotos,
     releaseStagedPhotos
 } from "./stagedPhoto.service.js";
+import { requestPhotoBackfill } from "./photoDerivatives.service.js";
 
 // Crockford base32: no I, L, O, U, so numbers read back over the phone are unambiguous
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -326,6 +327,8 @@ export const createSubmission = async ({ input, files, sitePhotos = [], idempote
     }
 
     await finishStagedPhotos(submissionId);
+    // Export preview and map thumbnail, made in the background
+    requestPhotoBackfill();
     return { submissionNo: document.submissionNo, replayed: false };
 };
 
@@ -378,6 +381,7 @@ export const addSubmissionFiles = async (id, files, { uploadedBy }) => {
         throw ApiError.conflict(`A submission can have at most ${maxFiles} files`);
     }
 
+    requestPhotoBackfill();
     return getSubmissionDetails(id);
 };
 

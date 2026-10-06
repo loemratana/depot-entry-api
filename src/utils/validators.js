@@ -59,10 +59,13 @@ export const paginationQuery = {
 };
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+// Date and time without a time zone, as the filters send it (e.g. 2026-10-05T08:30)
+const LOCAL_DATE_TIME = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2})?$/;
 
 /**
- * Accepts YYYY-MM-DD (interpreted in the business time zone) or a full ISO date-time.
- * `endOfDay` makes a date-only value inclusive of the whole day.
+ * Accepts YYYY-MM-DD or YYYY-MM-DDTHH:mm[:ss] (both in the business time zone),
+ * or a full ISO date-time with its own zone. `endOfDay` makes the end of a
+ * range inclusive: a date covers the whole day, and HH:mm the whole minute.
  */
 export const dateFilter = (label, { endOfDay = false } = {}) =>
     z
@@ -73,15 +76,20 @@ export const dateFilter = (label, { endOfDay = false } = {}) =>
             if (!value) return undefined;
 
             let date;
+            const local = LOCAL_DATE_TIME.exec(value);
             if (DATE_ONLY.test(value)) {
                 const time = endOfDay ? "23:59:59.999" : "00:00:00.000";
                 date = new Date(`${value}T${time}${config.utcOffset}`);
+            } else if (local) {
+                const seconds = local[2] ?? (endOfDay ? ":59" : ":00");
+                const millis = endOfDay ? ".999" : ".000";
+                date = new Date(`${local[1]}${seconds}${millis}${config.utcOffset}`);
             } else {
                 date = new Date(value);
             }
 
             if (Number.isNaN(date.getTime())) {
-                ctx.addIssue({ code: "custom", message: `Invalid ${label}. Use YYYY-MM-DD` });
+                ctx.addIssue({ code: "custom", message: `Invalid ${label}. Use YYYY-MM-DD or YYYY-MM-DDTHH:mm` });
                 return z.NEVER;
             }
             return date;
