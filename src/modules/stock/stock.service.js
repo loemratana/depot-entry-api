@@ -201,6 +201,7 @@ export const buildStockExport = async (query) => {
     const outlets = await Submission.find(
         { _id: { $in: outletIds } },
         {
+            phone: 1,
             "files._id": 1,
             "files.objectKey": 1,
             "files.previewKey": 1,
@@ -214,6 +215,8 @@ export const buildStockExport = async (query) => {
         .maxTimeMS(config.exportQueryTimeoutMs)
         .lean();
     const filesOf = new Map(outlets.map((outlet) => [outlet._id.toString(), outlet.files ?? []]));
+    // The outlet's current phone (stock reports do not keep one)
+    const phoneOf = new Map(outlets.map((outlet) => [outlet._id.toString(), outlet.phone ?? ""]));
     // Site photos (taken with GPS on the form) first, then other pictures
     const photosOf = new Map(
         outlets.map((outlet) => {
@@ -252,6 +255,8 @@ export const buildStockExport = async (query) => {
     sheet.columns = [
         { header: "No.", key: "no", width: 6 },
         { header: "Outlet", key: "outlet", width: 28 },
+        // Text, so the leading 0 is kept
+        { header: "Phone", key: "phone", width: 16, style: { numFmt: "@" } },
         { header: "Province", key: "province", width: 26 },
         { header: "District", key: "district", width: 26 },
         { header: "Commune", key: "commune", width: 26 },
@@ -284,6 +289,7 @@ export const buildStockExport = async (query) => {
         const values = {
             no: index + 1,
             outlet: doc.outletName,
+            phone: phoneOf.get(outletId) ?? "",
             province: bilingual(doc.provinceNameKh, doc.provinceNameEn),
             district: bilingual(doc.districtNameKh, doc.districtNameEn),
             commune: bilingual(doc.communeNameKh, doc.communeNameEn),

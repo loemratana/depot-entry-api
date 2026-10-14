@@ -99,7 +99,7 @@ describe("export pictures", () => {
         const placed = sheet.getImages().map((image) => [Math.floor(image.range.tl.nativeRow), Math.floor(image.range.tl.nativeCol)]);
         // All three photos (the WebP one too) on its row; the other outlet has one
         assert.deepEqual(
-            placed.filter(([row]) => row === threeRow).map(([, col]) => col).sort(),
+            placed.filter(([row]) => row === threeRow).map(([, col]) => col).sort((a, b) => a - b),
             [firstPhotoCol, firstPhotoCol + 1, firstPhotoCol + 2]
         );
         assert.deepEqual(placed.filter(([row]) => row === oneRow).map(([, col]) => col), [firstPhotoCol]);

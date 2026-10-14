@@ -243,7 +243,9 @@ describe("admin stock reports", () => {
         await workbook.xlsx.load(res.body);
         const sheet = workbook.getWorksheet("Stock Reports");
         const headers = sheet.getRow(1).values.slice(1);
-        assert.deepEqual(headers.slice(0, 6), ["No.", "Outlet", "Province", "District", "Commune", "Reported At"]);
+        assert.deepEqual(headers.slice(0, 7), ["No.", "Outlet", "Phone", "Province", "District", "Commune", "Reported At"]);
+        // The outlet's phone, kept as text so the leading 0 stays
+        assert.equal(sheet.getRow(2).getCell(3).value, "012345678");
         assert.ok(headers.includes("GANZBERG · Ganzberg Snow · ចំនួនកេស"));
         assert.ok(headers.includes("GANZBERG · Ganzberg Snow · ចំនួនក្រវិលលុយ(រៀល)"));
         assert.ok(headers.includes("GANZBERG BEER WEDDING · ស្រាបៀរហ្គេនបឺគ Gold រោងការ · ចំនួនកេស"));
@@ -253,7 +255,7 @@ describe("admin stock reports", () => {
         assert.deepEqual(headers.slice(-2), ["Photo 1", "Coordinates"]);
         // Each outlet's site photo has GPS: coordinates link to Google Maps
         assert.equal(sheet.getRow(2).getCell(headers.length).value.text, "11.556400, 104.928200");
-        assert.equal(headers.length, 8 + 3 * 4 + 2 * 1);
+        assert.equal(headers.length, 9 + 3 * 4 + 2 * 1);
         assert.equal(sheet.rowCount, 3);
 
         // Rows are numbered 1..n in the first column
