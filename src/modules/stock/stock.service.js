@@ -94,43 +94,86 @@ export const buildStockItems = async (inputItems, { fieldPrefix = "items" } = {}
 
 // ---------- Admin list / details / delete ----------
 
+const LOCATION_FIELDS = [
+    "provinceId",
+    "provinceNameKh",
+    "provinceNameEn",
+    "districtId",
+    "districtNameKh",
+    "districtNameEn",
+    "communeId",
+    "communeNameKh",
+    "communeNameEn"
+];
+
 /**
- * Search matches the outlet name, or (with 3+ digits) the outlet's phone, spaces
- * ignored. Reports do not keep a phone, so it is looked up on the outlets.
+ * The Stock list: one row per outlet with its latest stock report, including
+ * outlets that never sent stock (shown as "No stock", no report). Search matches
+ * the outlet name, or (with 3+ digits) its phone, spaces ignored. The date range
+ * applies to when the stock was reported, or, without a report, to when the
+ * outlet was submitted. Newest first.
  */
-export const buildStockFilter = async ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
-    const filter = {};
-    if (provinceId) filter.provinceId = toId(provinceId);
-    if (districtId) filter.districtId = toId(districtId);
-    if (communeId) filter.communeId = toId(communeId);
-    if (outletId) filter.outletId = toId(outletId);
-    if (dateFrom || dateTo) {
-        filter.reportedAt = {};
-        if (dateFrom) filter.reportedAt.$gte = dateFrom;
-        if (dateTo) filter.reportedAt.$lte = dateTo;
-    }
+const stockRowsPipeline = ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
+    const match = {};
+    if (provinceId) match.provinceId = toId(provinceId);
+    if (districtId) match.districtId = toId(districtId);
+    if (communeId) match.communeId = toId(communeId);
+    if (outletId) match._id = toId(outletId);
     if (search) {
         const text = search.normalize("NFC");
-        const or = [{ outletName: new RegExp(escapeRegex(text), "i") }];
+        const or = [{ clientName: new RegExp(escapeRegex(text), "i") }];
         const digits = normalizePhone(text).replace(/\D/g, "");
-        if (digits.length >= 3) {
-            const outletIds = await Submission.distinct("_id", { phone: new RegExp(escapeRegex(digits)) }).maxTimeMS(
-                config.queryTimeoutMs
-            );
-            if (outletIds.length) or.push({ outletId: { $in: outletIds } });
-        }
-        filter.$or = or;
+        if (digits.length >= 3) or.push({ phone: new RegExp(escapeRegex(digits)) });
+        match.$or = or;
     }
-    return filter;
+    const date = {};
+    if (dateFrom) date.$gte = dateFrom;
+    if (dateTo) date.$lte = dateTo;
+
+    return [
+        { $match: match },
+        {
+            $project: { clientName: 1, phone: 1, submittedAt: 1, ...Object.fromEntries(LOCATION_FIELDS.map((f) => [f, 1])) }
+        },
+        {
+            $lookup: {
+                from: StockReport.collection.name,
+                localField: "_id",
+                foreignField: "outletId",
+                pipeline: [{ $sort: { reportedAt: -1, _id: -1 } }, { $limit: 1 }, { $project: { idempotencyKey: 0 } }],
+                as: "report"
+            }
+        },
+        { $set: { report: { $first: "$report" } } },
+        { $set: { date: { $ifNull: ["$report.reportedAt", "$submittedAt"] } } },
+        ...(dateFrom || dateTo ? [{ $match: { date } }] : []),
+        { $sort: { date: -1, _id: -1 } }
+    ];
 };
 
-const SORT = { reportedAt: -1, _id: -1 };
+/** A row in the same shape as a stock report; an outlet without one has no items */
+const toRowDoc = (outlet) =>
+    outlet.report
+        ? { ...outlet.report, phone: outlet.phone ?? "", hasReport: true }
+        : {
+              _id: outlet._id,
+              outletId: outlet._id,
+              outletName: outlet.clientName,
+              ...Object.fromEntries(LOCATION_FIELDS.map((f) => [f, outlet[f]])),
+              items: [],
+              reportedAt: null,
+              submittedBy: null,
+              phone: outlet.phone ?? "",
+              hasReport: false
+          };
 
 const totalsOf = (items) =>
     Object.fromEntries(MEASURE_KEYS.map((key) => [key, items.reduce((sum, item) => sum + (item[key] ?? 0), 0)]));
 
-const toReport = (doc, phone = "") => ({
+const toReport = (doc, phone = doc.phone ?? "") => ({
     id: doc._id.toString(),
+    // false: the outlet has not sent stock yet (shown as "No stock")
+    hasReport: doc.hasReport ?? true,
     // The phone is the outlet's current one (reports do not keep a phone)
     outlet: { id: doc.outletId.toString(), name: doc.outletName, phone },
     province: { id: doc.provinceId.toString(), nameKh: doc.provinceNameKh, nameEn: doc.provinceNameEn },
@@ -157,16 +200,14 @@ const phonesOf = async (docs) => {
 };
 
 export const listStockReports = async (query) => {
-    const filter = await buildStockFilter(query);
     const { page, limit, skip } = getPagination(query);
-    const [docs, total] = await Promise.all([
-        StockReport.find(filter).sort(SORT).skip(skip).limit(limit).maxTimeMS(config.queryTimeoutMs).lean(),
-        StockReport.countDocuments(filter).maxTimeMS(config.queryTimeoutMs)
-    ]);
-    const phones = await phonesOf(docs);
+    const [result] = await Submission.aggregate([
+        ...stockRowsPipeline(query),
+        { $facet: { rows: [{ $skip: skip }, { $limit: limit }], total: [{ $count: "n" }] } }
+    ]).option({ maxTimeMS: config.queryTimeoutMs });
     return {
-        data: docs.map((doc) => toReport(doc, phones.get(doc.outletId.toString()))),
-        pagination: buildPagination({ page, limit, total })
+        data: result.rows.map((outlet) => toReport(toRowDoc(outlet))),
+        pagination: buildPagination({ page, limit, total: result.total[0]?.n ?? 0 })
     };
 };
 
@@ -211,10 +252,9 @@ export const buildStockExport = async (query) => {
         }))
     );
 
-    const docs = await StockReport.find(await buildStockFilter(query))
-        .sort(SORT)
-        .maxTimeMS(config.exportQueryTimeoutMs)
-        .lean();
+    const docs = (
+        await Submission.aggregate(stockRowsPipeline(query)).option({ maxTimeMS: config.exportQueryTimeoutMs })
+    ).map(toRowDoc);
     const known = new Set(productColumns.map((p) => p.id));
     for (const doc of docs) {
         for (const item of doc.items) {
@@ -324,7 +364,8 @@ export const buildStockExport = async (query) => {
             district: bilingual(doc.districtNameKh, doc.districtNameEn),
             commune: bilingual(doc.communeNameKh, doc.communeNameEn),
             // Excel has no time zones; write the business-local wall time
-            reportedAt: toBusinessWallTime(doc.reportedAt)
+            // Empty for an outlet that has not sent stock
+            reportedAt: doc.reportedAt ? toBusinessWallTime(doc.reportedAt) : null
         };
         for (const item of doc.items) {
             for (const key of MEASURE_KEYS) values[`${item.productId}:${key}`] = item[key] ?? 0;

@@ -215,7 +215,14 @@ describe("admin stock reports", () => {
     test("list shows reports newest first with totals, and filters work", async () => {
         const res = await api("/admin/stock/reports", { token });
         assert.equal(res.status, 200);
-        assert.equal(res.body.pagination.total, 2);
+        // Two outlets with stock, and one that sent none ("No stock")
+        assert.equal(res.body.pagination.total, 3);
+        const noStock = res.body.data.find((r) => r.outlet.name === "No Stock Shop");
+        assert.equal(noStock.hasReport, false);
+        assert.deepEqual(noStock.items, []);
+        assert.equal(noStock.reportedAt, null);
+        assert.equal(noStock.province.id, String(fx.p1._id));
+        assert.ok(res.body.data.filter((r) => r !== noStock).every((r) => r.hasReport === true));
         const alpha = res.body.data.find((r) => r.outlet.name === "Shop Alpha");
         assert.deepEqual(alpha.totals, { cases: 11, canRings: 5, cashRingsUsd: 1, cashRingsKhr: 4 });
         // Product names and the quantities each brand counts come with every report
@@ -256,15 +263,19 @@ describe("admin stock reports", () => {
         // Each outlet's site photo has GPS: coordinates link to Google Maps
         assert.equal(sheet.getRow(2).getCell(headers.length).value.text, "11.556400, 104.928200");
         assert.equal(headers.length, 9 + 3 * 4 + 2 * 1);
-        assert.equal(sheet.rowCount, 3);
+        // Two outlets with stock and "No Stock Shop" (no quantities, no date)
+        assert.equal(sheet.rowCount, 4);
+        const noStockRow = [2, 3, 4].map((n) => sheet.getRow(n)).find((row) => row.getCell(2).value === "No Stock Shop");
+        assert.equal(noStockRow.getCell(7).value, null);
+        assert.equal(noStockRow.getCell(8).value, null);
 
         // Rows are numbered 1..n in the first column
         assert.deepEqual([sheet.getRow(2).getCell(1).value, sheet.getRow(3).getCell(1).value], [1, 2]);
         // Each outlet's photo is embedded in the Photo 1 column (second to last), one per row
         const images = sheet.getImages();
-        assert.equal(images.length, 2);
+        assert.equal(images.length, 3);
         assert.ok(images.every((image) => image.range.tl.nativeCol === headers.length - 2));
-        assert.deepEqual(images.map((image) => image.range.tl.nativeRow).sort(), [1, 2]);
+        assert.deepEqual(images.map((image) => image.range.tl.nativeRow).sort(), [1, 2, 3]);
     });
 
     test("Excel export: no picture, and pictures past the memory limit, are explained in the cell", async () => {
@@ -344,6 +355,40 @@ describe("admin stock reports", () => {
             const outlet = await Submission.findOne({ clientName: name }).lean();
             await api(`/admin/submissions/${outlet._id}`, { method: "DELETE", token });
         }
+    });
+
+    test("outlets that never sent stock are listed as No stock, found by search, filters and dates", async () => {
+        assert.equal((await submitOutlet({ clientName: "Never Stocked", phone: "077 900 1122" }, null)).status, 201);
+        const outlet = await Submission.findOne({ clientName: "Never Stocked" }).lean();
+        const rows = async (query) => (await api(`/admin/stock/reports?${query}`, { token })).body.data;
+
+        const [byName] = await rows("search=Never%20Stocked");
+        assert.equal(byName.hasReport, false);
+        assert.equal(byName.outlet.id, String(outlet._id));
+        assert.equal(byName.outlet.phone, "0779001122");
+        assert.equal((await rows("search=077%20900")).length, 1);
+        assert.equal((await rows(`outletId=${outlet._id}`))[0].hasReport, false);
+        assert.equal((await rows(`provinceId=${fx.p2._id}&search=Never`)).length, 0);
+
+        // Without a report, the date range uses when the outlet was submitted
+        await Submission.updateOne({ _id: outlet._id }, { $set: { submittedAt: new Date("2025-03-10T09:00:00+07:00") } });
+        assert.equal((await rows("search=Never&dateFrom=2025-03-10&dateTo=2025-03-10")).length, 1);
+        assert.equal((await rows("search=Never&dateFrom=2025-03-11")).length, 0);
+
+        // Once stock is added it is an ordinary report
+        assert.equal(
+            (await api(`/admin/submissions/${outlet._id}/stock`, {
+                method: "PUT",
+                token,
+                json: { stockItems: [{ productId: snow._id.toString(), cases: 2 }] }
+            })).status,
+            200
+        );
+        const [stocked] = await rows("search=Never%20Stocked");
+        assert.equal(stocked.hasReport, true);
+        assert.equal(stocked.totals.cases, 2);
+
+        await api(`/admin/submissions/${outlet._id}`, { method: "DELETE", token });
     });
 
     test("details and deleting a single report", async () => {

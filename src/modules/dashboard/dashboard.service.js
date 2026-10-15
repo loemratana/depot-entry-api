@@ -36,30 +36,25 @@ const startOfToday = () => new Date(`${businessDate()}T00:00:00.000${config.utcO
  *  - totalOutlets: outlets added in the period (all time when no dates)
  *  - products (only with stock.view): one entry per active product, in stock-form
  *    order, with the total of each quantity its brand counts and how many outlets
- *    reported it, from stock reports in the period
+ *    sent a stock report with that product in the period ("No stock", all 0, counts
+ *    too; outlets that never sent stock do not)
  *  - totalStock (only with stock.view): cases of every product added together, and
- *    how many outlets reported any stock in the period
+ *    every outlet in the period, with or without stock (the same as totalOutlets,
+ *    like the Stock page, which lists every outlet)
  */
 export const getDashboard = async (query, { includeStock }) => {
     const location = locationFilter(query);
     const period = dateRange(query);
     const maxTimeMS = config.queryTimeoutMs;
 
-    const [todayOutlets, totalOutlets, products, stockedOutlets] = await Promise.all([
+    const [todayOutlets, totalOutlets, products] = await Promise.all([
         Submission.countDocuments({ ...location, submittedAt: { $gte: startOfToday() } }).maxTimeMS(maxTimeMS),
         Submission.countDocuments({ ...location, ...(period && { submittedAt: period }) }).maxTimeMS(maxTimeMS),
-        includeStock ? productTotals(location, period, maxTimeMS) : null,
-        includeStock
-            ? StockReport.countDocuments({
-                  ...location,
-                  ...(period && { reportedAt: period }),
-                  items: { $elemMatch: { $or: MEASURE_KEYS.map((key) => ({ [key]: { $gt: 0 } })) } }
-              }).maxTimeMS(maxTimeMS)
-            : null
+        includeStock ? productTotals(location, period, maxTimeMS) : null
     ]);
 
     const totalStock = products
-        ? { cases: products.reduce((sum, product) => sum + (product.totals.cases ?? 0), 0), outlets: stockedOutlets }
+        ? { cases: products.reduce((sum, product) => sum + (product.totals.cases ?? 0), 0), outlets: totalOutlets }
         : null;
 
     return { todayOutlets, totalOutlets, totalStock, products };
@@ -76,7 +71,8 @@ const productTotals = async (location, period, maxTimeMS) => {
                 $group: {
                     _id: "$items.productId",
                     ...Object.fromEntries(MEASURE_KEYS.map((key) => [key, { $sum: { $ifNull: [`$items.${key}`, 0] } }])),
-                    outlets: { $sum: { $cond: [{ $gt: [{ $add: MEASURE_KEYS.map((k) => ({ $ifNull: [`$items.${k}`, 0] })) }, 0] }, 1, 0] } }
+                    // Outlets whose report lists the product, whatever the quantity
+                    outletIds: { $addToSet: "$outletId" }
                 }
             }
         ]).option({ maxTimeMS })
@@ -98,8 +94,8 @@ const productTotals = async (location, period, maxTimeMS) => {
                     measures,
                     // Only the quantities this brand counts
                     totals: Object.fromEntries(measures.map((key) => [key, row?.[key] ?? 0])),
-                    // Outlets that reported some stock of this product
-                    outlets: row?.outlets ?? 0
+                    // Outlets that sent stock with this product, a 0 included
+                    outlets: row?.outletIds.length ?? 0
                 };
             });
     });

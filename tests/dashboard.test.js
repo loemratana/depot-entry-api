@@ -75,7 +75,7 @@ describe("dashboard", () => {
         assert.equal(res.status, 200, JSON.stringify(res.body));
         assert.equal(res.body.data.todayOutlets, 2);
         assert.equal(res.body.data.totalOutlets, 3);
-        // Gold 115 + Wedding Gold 3 cases; all 3 outlets reported stock
+        // Gold 115 + Wedding Gold 3 cases; all 3 outlets sent a stock report
         assert.deepEqual(res.body.data.totalStock, { cases: 118, outlets: 3 });
 
         const names = res.body.data.products.map((p) => p.shortName);
@@ -87,7 +87,47 @@ describe("dashboard", () => {
         assert.deepEqual(card(res.body, weddingGold).totals, { cases: 3 });
         // Products nobody reported still get a card, at 0
         assert.deepEqual(card(res.body, snow).totals.cases, 0);
+        // Outlets whose stock report lists the product: no report lists Snow; Wedding Gold only A
         assert.equal(card(res.body, snow).outlets, 0);
+        assert.equal(card(res.body, weddingGold).outlets, 1);
+    });
+
+    test("Total stock counts every outlet; product cards count outlets that sent stock, \"No stock\" ones too", async () => {
+        const before = (await dashboard()).body.data;
+        const noReport = await api("/public/submissions", {
+            method: "POST",
+            form: submissionForm(validFields(fx, { saleGbId: undefined, clientName: "No Report Outlet" }))
+        });
+        const zeros = await api("/public/submissions", {
+            method: "POST",
+            form: submissionForm(
+                validFields(fx, {
+                    saleGbId: undefined,
+                    clientName: "No Stock Outlet",
+                    stockItems: JSON.stringify([{ productId: gold._id.toString(), cases: 0 }])
+                })
+            )
+        });
+        assert.equal(noReport.status, 201, JSON.stringify(noReport.body));
+        assert.equal(zeros.status, 201, JSON.stringify(zeros.body));
+
+        const after = (await dashboard()).body.data;
+        assert.equal(after.totalOutlets, before.totalOutlets + 2);
+        // Total stock counts every outlet, like Total outlet
+        assert.equal(after.totalStock.outlets, after.totalOutlets);
+        // Product cards: the "No stock" report counts; the outlet without a report does not
+        assert.equal(card({ data: after }, gold).outlets, card({ data: before }, gold).outlets + 1);
+        assert.equal(card({ data: after }, snow).outlets, card({ data: before }, snow).outlets);
+        assert.equal(after.totalStock.cases, before.totalStock.cases);
+        assert.deepEqual(
+            after.products.map((p) => p.totals),
+            before.products.map((p) => p.totals)
+        );
+
+        for (const name of ["No Report Outlet", "No Stock Outlet"]) {
+            const doc = await Submission.findOne({ clientName: name }).lean();
+            await api(`/admin/submissions/${doc._id}`, { method: "DELETE", token });
+        }
     });
 
     test("province / district / commune filters apply to every card", async () => {
