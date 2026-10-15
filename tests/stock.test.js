@@ -308,6 +308,44 @@ describe("admin stock reports", () => {
         }
     });
 
+    test("search also finds an outlet's stock by its phone, spaces ignored", async () => {
+        assert.equal((await submitOutlet({ clientName: "Phone Shop One", phone: "097 111 2233" })).status, 201);
+        assert.equal((await submitOutlet({ clientName: "Phone Shop Two", phone: "088 444 5566" })).status, 201);
+        const names = async (search, extra = "") =>
+            (await api(`/admin/stock/reports?search=${encodeURIComponent(search)}${extra}`, { token })).body.data
+                .map((r) => r.outlet.name)
+                .sort();
+
+        assert.deepEqual(await names("0971112233"), ["Phone Shop One"]);
+        // The list and the detail show the outlet's phone
+        const found = (await api(`/admin/stock/reports?search=0971112233`, { token })).body.data[0];
+        assert.equal(found.outlet.phone, "0971112233");
+        assert.equal((await api(`/admin/stock/reports/${found.id}`, { token })).body.data.outlet.phone, "0971112233");
+        assert.deepEqual(await names("097 111 2233"), ["Phone Shop One"]);
+        assert.deepEqual(await names("+855 97 111 2233"), ["Phone Shop One"]);
+        // Part of a number
+        assert.deepEqual(await names("4445"), ["Phone Shop Two"]);
+        // Names still match; fewer than 3 digits is not a phone search
+        assert.deepEqual(await names("Phone Shop"), ["Phone Shop One", "Phone Shop Two"]);
+        assert.deepEqual(await names("97"), []);
+        // Combined with other filters
+        assert.deepEqual(await names("0971112233", `&provinceId=${fx.p2._id}`), []);
+
+        // The Excel export uses the same search
+        const res = await api(`/admin/stock/reports/export?search=${encodeURIComponent("088 444")}`, { token });
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(res.body);
+        const sheet = workbook.getWorksheet("Stock Reports");
+        assert.equal(sheet.rowCount, 2);
+        assert.equal(sheet.getRow(2).getCell(2).value, "Phone Shop Two");
+        assert.equal(sheet.getRow(2).getCell(3).value, "0884445566");
+
+        for (const name of ["Phone Shop One", "Phone Shop Two"]) {
+            const outlet = await Submission.findOne({ clientName: name }).lean();
+            await api(`/admin/submissions/${outlet._id}`, { method: "DELETE", token });
+        }
+    });
+
     test("details and deleting a single report", async () => {
         const replay = (await api(`/admin/stock/reports?search=${encodeURIComponent("Replay")}`, { token })).body.data[0];
         const detail = await api(`/admin/stock/reports/${replay.id}`, { token });

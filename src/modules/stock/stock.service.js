@@ -4,6 +4,7 @@ import config from "../../config/env.js";
 import ApiError from "../../utils/ApiError.js";
 import { businessDate, toBusinessWallTime } from "../../utils/date.js";
 import { buildPagination, escapeRegex, getPagination } from "../../utils/pagination.js";
+import { normalizePhone } from "../../utils/validators.js";
 import {
     DOWNLOAD_CONCURRENCY,
     PHOTO_COLUMN_WIDTH,
@@ -93,7 +94,11 @@ export const buildStockItems = async (inputItems, { fieldPrefix = "items" } = {}
 
 // ---------- Admin list / details / delete ----------
 
-export const buildStockFilter = ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
+/**
+ * Search matches the outlet name, or (with 3+ digits) the outlet's phone, spaces
+ * ignored. Reports do not keep a phone, so it is looked up on the outlets.
+ */
+export const buildStockFilter = async ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
     const filter = {};
     if (provinceId) filter.provinceId = toId(provinceId);
     if (districtId) filter.districtId = toId(districtId);
@@ -104,7 +109,18 @@ export const buildStockFilter = ({ search, provinceId, districtId, communeId, ou
         if (dateFrom) filter.reportedAt.$gte = dateFrom;
         if (dateTo) filter.reportedAt.$lte = dateTo;
     }
-    if (search) filter.outletName = new RegExp(escapeRegex(search.normalize("NFC")), "i");
+    if (search) {
+        const text = search.normalize("NFC");
+        const or = [{ outletName: new RegExp(escapeRegex(text), "i") }];
+        const digits = normalizePhone(text).replace(/\D/g, "");
+        if (digits.length >= 3) {
+            const outletIds = await Submission.distinct("_id", { phone: new RegExp(escapeRegex(digits)) }).maxTimeMS(
+                config.queryTimeoutMs
+            );
+            if (outletIds.length) or.push({ outletId: { $in: outletIds } });
+        }
+        filter.$or = or;
+    }
     return filter;
 };
 
@@ -113,9 +129,10 @@ const SORT = { reportedAt: -1, _id: -1 };
 const totalsOf = (items) =>
     Object.fromEntries(MEASURE_KEYS.map((key) => [key, items.reduce((sum, item) => sum + (item[key] ?? 0), 0)]));
 
-const toReport = (doc) => ({
+const toReport = (doc, phone = "") => ({
     id: doc._id.toString(),
-    outlet: { id: doc.outletId.toString(), name: doc.outletName },
+    // The phone is the outlet's current one (reports do not keep a phone)
+    outlet: { id: doc.outletId.toString(), name: doc.outletName, phone },
     province: { id: doc.provinceId.toString(), nameKh: doc.provinceNameKh, nameEn: doc.provinceNameEn },
     district: { id: doc.districtId.toString(), nameKh: doc.districtNameKh, nameEn: doc.districtNameEn },
     commune: { id: doc.communeId.toString(), nameKh: doc.communeNameKh, nameEn: doc.communeNameEn },
@@ -131,20 +148,33 @@ const toReport = (doc) => ({
     submittedByAdmin: Boolean(doc.submittedBy)
 });
 
+/** outletId → the outlet's current phone, for one page of reports */
+const phonesOf = async (docs) => {
+    const ids = [...new Set(docs.map((doc) => doc.outletId.toString()))];
+    if (ids.length === 0) return new Map();
+    const outlets = await Submission.find({ _id: { $in: ids } }, { phone: 1 }).maxTimeMS(config.queryTimeoutMs).lean();
+    return new Map(outlets.map((outlet) => [outlet._id.toString(), outlet.phone ?? ""]));
+};
+
 export const listStockReports = async (query) => {
-    const filter = buildStockFilter(query);
+    const filter = await buildStockFilter(query);
     const { page, limit, skip } = getPagination(query);
     const [docs, total] = await Promise.all([
         StockReport.find(filter).sort(SORT).skip(skip).limit(limit).maxTimeMS(config.queryTimeoutMs).lean(),
         StockReport.countDocuments(filter).maxTimeMS(config.queryTimeoutMs)
     ]);
-    return { data: docs.map(toReport), pagination: buildPagination({ page, limit, total }) };
+    const phones = await phonesOf(docs);
+    return {
+        data: docs.map((doc) => toReport(doc, phones.get(doc.outletId.toString()))),
+        pagination: buildPagination({ page, limit, total })
+    };
 };
 
 export const getStockReport = async (id) => {
     const doc = await StockReport.findById(id).lean();
     if (!doc) throw ApiError.notFound("Stock report not found");
-    return toReport(doc);
+    const phones = await phonesOf([doc]);
+    return toReport(doc, phones.get(doc.outletId.toString()));
 };
 
 export const deleteStockReport = async (id) => {
@@ -181,7 +211,7 @@ export const buildStockExport = async (query) => {
         }))
     );
 
-    const docs = await StockReport.find(buildStockFilter(query))
+    const docs = await StockReport.find(await buildStockFilter(query))
         .sort(SORT)
         .maxTimeMS(config.exportQueryTimeoutMs)
         .lean();
