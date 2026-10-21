@@ -31,6 +31,13 @@ const canViewStock = requirePermission("stock.view");
 adminStockRoutes.get("/reports", canViewStock, validate(listStockReportsSchema), stockController.listReports);
 // Registered before /reports/:id so "export" is not parsed as an id
 adminStockRoutes.get("/reports/export", requirePermission("stock.export"), validate(exportStockReportsSchema), stockController.exportReports);
+// The same rows in the field team's sheet layout
+adminStockRoutes.get(
+    "/reports/export-sheet",
+    requirePermission("stock.export"),
+    validate(exportStockReportsSchema),
+    stockController.exportSheet
+);
 adminStockRoutes.get("/reports/:id", canViewStock, validate(stockReportIdSchema), stockController.getReport);
 adminStockRoutes.delete("/reports/:id", requirePermission("stock.delete"), validate(stockReportIdSchema), stockController.deleteReport);
 

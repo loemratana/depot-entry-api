@@ -113,7 +113,7 @@ const LOCATION_FIELDS = [
  * applies to when the stock was reported, or, without a report, to when the
  * outlet was submitted. Newest first.
  */
-const stockRowsPipeline = ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
+export const stockRowsPipeline = ({ search, provinceId, districtId, communeId, outletId, dateFrom, dateTo }) => {
     const match = {};
     if (provinceId) match.provinceId = toId(provinceId);
     if (districtId) match.districtId = toId(districtId);
@@ -152,7 +152,7 @@ const stockRowsPipeline = ({ search, provinceId, districtId, communeId, outletId
 };
 
 /** A row in the same shape as a stock report; an outlet without one has no items */
-const toRowDoc = (outlet) =>
+export const toRowDoc = (outlet) =>
     outlet.report
         ? { ...outlet.report, phone: outlet.phone ?? "", hasReport: true }
         : {

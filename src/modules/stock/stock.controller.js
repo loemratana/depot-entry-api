@@ -2,6 +2,7 @@ import asyncHandler from "../../utils/asyncHandler.js";
 import { sendSuccess } from "../../utils/response.js";
 import { STOCK_MEASURES } from "./stock.constants.js";
 import * as stockService from "./stock.service.js";
+import { buildStockSheetExport, stockSheetFileName } from "./stockSheet.export.js";
 import { exportLimiter } from "../export/export.controller.js";
 
 // ---------- Public ----------
@@ -29,6 +30,21 @@ export const deleteReport = asyncHandler(async (req, res) => {
 });
 
 // Pictures are held in memory, so stock exports share the outlet export queue
+/** Real stock in the field team's sheet layout (stockSheet.export) */
+export const exportSheet = asyncHandler(async (req, res) => {
+    await exportLimiter.run(async () => {
+        const { workbook } = await buildStockSheetExport(req.validated.query);
+        res.status(200);
+        res.set({
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "Content-Disposition": `attachment; filename="${stockSheetFileName()}"`,
+            "Cache-Control": "no-store"
+        });
+        await workbook.xlsx.write(res);
+        res.end();
+    });
+});
+
 export const exportReports = asyncHandler(async (req, res) => {
     await exportLimiter.run(async () => {
         // Built before any headers are sent, so a failure still returns a normal JSON error
