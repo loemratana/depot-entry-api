@@ -27,9 +27,12 @@ jobs:
 
     # Throwaway MongoDB for the tests only. The tests wipe their database, so they
     # must never run against the real MongoDB on the VPS.
+    # 7.0, not 8: MongoDB 8.0+ crashes at start on Linux kernel 6.19+ (which the
+    # GitHub runners now use) because of its bundled TCMalloc, with no fixed release
+    # yet (https://jira.mongodb.org/browse/SERVER-121912). The test suite passes on 7.0.
     services:
       mongodb:
-        image: mongo:8
+        image: mongo:7.0
         env:
           MONGO_INITDB_ROOT_USERNAME: ci
           MONGO_INITDB_ROOT_PASSWORD: ci-password
